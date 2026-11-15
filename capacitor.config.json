@@ -1,0 +1,10 @@
+{
+  "appId": "ar.reale.s10diag",
+  "appName": "S10 Diag",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": false,
+    "webContentsDebuggingEnabled": false
+  }
+}

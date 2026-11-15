@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
+<title>S10 Diag</title>
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<header><h1>S10 Diag</h1><span id="st">Desconectado</span></header>
+<main>
+  <section id="conn">
+    <button id="bScan">Buscar ELM327</button>
+    <div id="devs"></div>
+    <div class="row"><input id="mac" placeholder="MAC (ej 00:1D:A5:68:98:8B)" autocomplete="off"><button id="bConn">Conectar</button></div>
+  </section>
+  <section id="acts" hidden>
+    <button id="bFull">Diagnóstico completo</button>
+    <button id="bTest">Probar adaptador</button>
+    <button id="bLive">Datos en vivo</button>
+    <button id="bStop" hidden>Detener</button>
+    <button id="bDisc" class="sec">Desconectar</button>
+  </section>
+  <div id="prog"></div>
+  <section id="live" hidden></section>
+  <section id="out" hidden>
+    <div class="row"><button id="bCopy">Copiar reporte</button><button id="bRaw" class="sec">Copiar log crudo</button></div>
+    <pre id="rep"></pre>
+  </section>
+  <p class="foot">Solo lectura: esta app no borra códigos ni modifica nada en la camioneta.</p>
+</main>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
