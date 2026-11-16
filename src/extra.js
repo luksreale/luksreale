@@ -14,7 +14,22 @@ export const EXTRA = {
   0x6A: ['Mariposa admision (relativa)', '%', (d) => (d[0] & 2 ? d[2] * 100 / 255 : null)],
   0x68: ['Temp aire admision (sensor A)', 'C', (d) => (d[0] & 1 ? d[1] - 40 : null)],
 };
-export const ALL = { ...PIDS, 0x49: ['Pedal acelerador D', ...PIDS[0x49].slice(1)], ...EXTRA };
+// Nivel de combustible: el ECM de la S10 manda el porcentaje directo (0-100) en vez de la
+// escala OBD estandar 0-255. Verificado contra la aguja del tablero: byte 0x52 = 82 % (no 32 %).
+// Si alguna vez llega un byte > 100, no puede ser porcentaje directo y se usa la escala estandar.
+export const fuelPct = (a) => (a <= 100 ? a : a * 100 / 255);
+export const ALL = { ...PIDS, 0x49: ['Pedal acelerador D', ...PIDS[0x49].slice(1)], 0x2F: ['Nivel combustible', '%', (d) => fuelPct(d[0])], ...EXTRA };
+
+// Corrige en el reporte de Diag (que usa la escala estandar de elm.js) el nivel de combustible.
+export function fixFuelInReport(r) {
+  const fix = (obj) => {
+    if (!obj || typeof obj !== 'object' || !('Nivel combustible' in obj)) return;
+    const std = parseFloat(obj['Nivel combustible']);
+    if (Number.isFinite(std)) obj['Nivel combustible'] = `${Math.round(fuelPct(Math.round(std * 255 / 100)) * 10) / 10} %`;
+  };
+  for (const v of Object.values(r.valores_actuales || {})) fix(v);
+  if (r.freeze_frame && typeof r.freeze_frame === 'object') for (const v of Object.values(r.freeze_frame)) fix(v);
+}
 
 export const supportedSet = (diag) => { const s = new Set(); for (const v of Object.values(diag.sup)) v.forEach((x) => s.add(x)); return s; };
 

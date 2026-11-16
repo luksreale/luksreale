@@ -3,9 +3,9 @@ import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-communi
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
 import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.js';
 import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
-import { ALL, readAny, extraSnapshot, gmModules, addressingTest, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
+import { ALL, readAny, extraSnapshot, gmModules, addressingTest, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -168,6 +168,7 @@ $('bFull').onclick = async () => {
     await diag.adapterTest(); await diag.info(); await diag.supported(); await diag.status();
     await diag.obdDtcs(); await diag.freeze(); await diag.snapshot();
     Object.assign(diag.r.valores_actuales['7E8'], await extraSnapshot(diag));
+    fixFuelInReport(diag.r);
     prog('Probando direccionamiento del adaptador...');
     const dir = await addressingTest(diag);
     diag.r.test_adaptador.direccionamiento = dir.txt;
