@@ -1,10 +1,10 @@
 import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
-import { TripLogger, listTrips, clearTrips, tripsText } from './logger.js';
+import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -234,32 +234,108 @@ async function copy(text) {
 $('bCopy').onclick = () => copy(report);
 $('bRaw').onclick = () => copy(JSON.stringify(elm ? elm.log.slice(-3000) : []));
 
-// ---- Registro de viaje
+// ---- Registro de viaje + tablero
 let trip = null;
+const tankL = () => { const v = parseFloat(store.get('tank')); return v > 20 && v < 200 ? v : 76; };
+$('tank').value = tankL();
+$('tank').onchange = () => { store.set('tank', String(parseFloat($('tank').value) || 76)); $('tank').value = tankL(); refreshTrips(); };
+let semana = { km: 0, litros: 0 };
 async function refreshTrips() {
-  try { const n = (await listTrips()).length; $('bTrips').textContent = `Copiar registros (${n} viaje${n === 1 ? '' : 's'})`; } catch {}
+  try {
+    const t = await listTrips(); const n = t.length;
+    $('bTrips').textContent = `Copiar registros (${n} viaje${n === 1 ? '' : 's'})`;
+    semana = fuelSummary(t, tankL());
+  } catch {}
 }
 refreshTrips();
+
+// Tacometro: arco de 240 grados
+const A0 = -210, A1 = 30, RPM_MAX = 4500, RPM_RED = 4000;
+const pol = (a, r) => [100 + r * Math.cos(a * Math.PI / 180), 100 + r * Math.sin(a * Math.PI / 180)];
+const arc = (a, b, r) => { const [x0, y0] = pol(a, r), [x1, y1] = pol(b, r); return `M${x0.toFixed(1)} ${y0.toFixed(1)}A${r} ${r} 0 ${b - a > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`; };
+const rpmAng = (r) => A0 + (A1 - A0) * Math.min(1, Math.max(0, r / RPM_MAX));
+function dashHtml() {
+  const ticks = [];
+  for (let r = 0; r <= RPM_MAX; r += 500) { const a = rpmAng(r), [x0, y0] = pol(a, 78), [x1, y1] = pol(a, r % 1000 ? 84 : 88), [tx, ty] = pol(a, 66);
+    ticks.push(`<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" class="tk"/>` + (r % 1000 ? '' : `<text x="${tx}" y="${ty + 3}" class="tl">${r / 1000}</text>`)); }
+  const tile = (id, label, unit) => `<div class="tile" id="t_${id}"><small>${label}</small><b id="v_${id}">-</b><i>${unit}</i><span class="bar"><span id="b_${id}"></span></span></div>`;
+  return `<div id="evb" hidden></div>
+  <svg viewBox="0 0 200 160" class="tacho">
+    <path d="${arc(A0, A1, 90)}" class="trk"/>
+    <path d="${arc(rpmAng(RPM_RED), A1, 90)}" class="red"/>
+    <path id="rpmarc" d="${arc(A0, A0 + 0.1, 90)}" class="val"/>
+    ${ticks.join('')}
+    <text x="100" y="98" class="spd" id="spd">-</text>
+    <text x="100" y="114" class="su">km/h</text>
+    <text x="100" y="140" class="rpm" id="rpmv">- rpm</text>
+  </svg>
+  <div class="tiles">
+    ${tile('boost', 'Turbo (MAP−baro)', 'bar')}${tile('temp', 'Temp motor', '°C')}
+    ${tile('rail', 'Presión rail', 'bar')}${tile('volt', 'Tensión', 'V')}
+    ${tile('pedal', 'Pedal', '%')}${tile('load', 'Carga motor', '%')}
+    ${tile('fuel', 'Combustible', '')}${tile('egr', 'EGR comandada', '%')}
+  </div>
+  <div class="tripbar"><div><small>Viaje</small><b id="v_km">0,0</b><i>km</i></div><div><small>Tiempo</small><b id="v_time">0:00</b></div>
+    <div><small>Consumo</small><b id="v_l100">-</b><i>L/100</i></div><div><small>Eventos</small><b id="v_ev">0</b></div></div>
+  <p class="dnote" id="dnote"></p>`;
+}
+const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? '-' : v.toFixed(d).replace('.', ','));
+function setTile(id, val, d, min, max, warn) {
+  const el = $('v_' + id); if (!el) return;
+  el.textContent = typeof val === 'string' ? val : fmt(val, d);
+  const b = $('b_' + id); const num = typeof val === 'number' ? val : null;
+  if (b) b.style.width = num == null ? '0%' : Math.round(Math.min(1, Math.max(0, (num - min) / (max - min))) * 100) + '%';
+  $('t_' + id).classList.toggle('warn', !!(num != null && warn && warn(num)));
+}
+function drawDash(t) {
+  const u = t.ultimo || {}, rpm = u[0x0C];
+  $('rpmarc').setAttribute('d', arc(A0, rpmAng(rpm ?? 0) + 0.1, 90));
+  $('rpmarc').classList.toggle('hot', (rpm ?? 0) >= RPM_RED);
+  $('spd').textContent = fmt(u[0x0D]); $('rpmv').textContent = `${fmt(rpm)} rpm`;
+  const boost = u[0x0B] != null && u.baro != null ? (u[0x0B] - u.baro) / 100 : null;
+  setTile('boost', boost, 2, -0.2, 2);
+  setTile('temp', u[0x05], 0, 40, 120, (v) => v > 105);
+  setTile('rail', u[0x23] != null ? u[0x23] / 100 : null, 0, 0, 2000);
+  setTile('volt', u[0x42], 1, 11, 15, (v) => v < 12.2 || v > 14.8);
+  setTile('pedal', u[0x49], 0, 0, 100);
+  setTile('load', u[0x04], 0, 0, 100);
+  const lv = u[0x2F];
+  setTile('fuel', lv != null ? `${fmt(lv)}% · ${fmt(lv / 100 * tankL())} L` : '-', 0, 0, 100, () => lv != null && lv < 12);
+  if ($('b_fuel')) $('b_fuel').style.width = (lv ?? 0) + '%';
+  setTile('egr', u[0x2C], 0, 0, 100);
+  $('v_km').textContent = fmt(t.km, 1);
+  const sec = Math.round((Date.now() - Date.parse(t.inicio)) / 1000);
+  $('v_time').textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  const km = semana.km + t.km, used = t.nivel_inicio != null && t.nivel_fin != null && t.nivel_inicio >= t.nivel_fin ? (t.nivel_inicio - t.nivel_fin) / 100 * tankL() : 0;
+  const lit = semana.litros + used;
+  $('v_l100').textContent = km >= 50 && lit > 0 ? fmt(lit / km * 100, 1) : '-';
+  $('v_ev').textContent = t.eventos.length;
+  $('dnote').textContent = (t.mil_actual ? '⚠ Testigo encendido. ' : '') + (t.dtc_actual && t.dtc_actual.length ? 'Códigos: ' + t.dtc_actual.join(', ') + '. ' : '') +
+    (km < 50 ? `Consumo: se calcula al juntar 50 km (llevás ${fmt(km, 0)}).` : '');
+}
 $('bTrip').onclick = async () => {
   if (busy) return; lock(true); stopLive = false;
   let wake = null; try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+  await refreshTrips();
+  document.body.classList.add('dash');
   $('bStop').hidden = false; $('live').hidden = false;
-  $('live').innerHTML = '<p>Grabando viaje. Dejá la app abierta y en pantalla (con cargador). Tocá Detener al llegar.</p><pre id="tripst"></pre>';
+  $('live').innerHTML = dashHtml();
+  let evTimer = null;
   trip = new TripLogger(diag, (t, ev) => {
-    const mins = ((Date.now() - Date.parse(t.inicio)) / 60000).toFixed(1);
-    $('tripst').textContent = `${mins} min · ${t.muestras} muestras · ${t.eventos.length} eventos` + (t.eventos.length ? `\nUltimo: ${t.eventos[t.eventos.length - 1].motivo}` : '');
-    if (ev) prog('EVENTO: ' + ev);
+    drawDash(t);
+    if (ev) { const b = $('evb'); b.textContent = '⚠ ' + ev; b.hidden = false; clearTimeout(evTimer); evTimer = setTimeout(() => (b.hidden = true), 8000); }
   });
   $('bStop').onclick = () => { stopLive = true; if (trip) trip.stop = true; };
-  prog('Registro de viaje en curso...');
-  try { const t = await trip.run(); prog(`Viaje guardado: ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
+  prog('Grabando viaje: dejá la app abierta, en pantalla y con cargador. Tocá Detener al llegar.');
+  try { const t = await trip.run(); prog(`Viaje guardado: ${fmt(t.km, 1)} km, ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
   catch (e) { prog('Error en registro (lo grabado hasta ahora quedó guardado): ' + e.message); }
   try { await wake?.release(); } catch {}
+  document.body.classList.remove('dash');
   trip = null; $('bStop').hidden = true; $('bStop').onclick = () => { stopLive = true; };
   lock(false); refreshTrips();
 };
 $('bTrips').onclick = async () => {
-  try { const t = await listTrips(); if (!t.length) return prog('No hay viajes guardados.'); await copy(tripsText(t)); } catch (e) { prog('Error leyendo registros: ' + e.message); }
+  try { const t = await listTrips(); if (!t.length) return prog('No hay viajes guardados.'); await copy(tripsText(t, tankL())); } catch (e) { prog('Error leyendo registros: ' + e.message); }
 };
 $('bClr').onclick = async () => {
   if (!confirm('¿Borrar todos los viajes guardados?')) return;

@@ -4,7 +4,6 @@
 import { ALL, readAny, supportedSet } from './extra.js';
 import { parseFrames, dtcStr } from './elm.js';
 
-export const TRIP_PIDS = [0x0C, 0x0D, 0x05, 0x0B, 0x33, 0x23, 0x49, 0x4A, 0x2C, 0x2D, 0x6A, 0x42, 0x04];
 const RING = 25;          // muestras guardadas antes de cada evento
 const AFTER = 10;         // muestras guardadas despues
 const MAX_EVENTS = 60;    // por viaje
@@ -60,57 +59,103 @@ function anomalies(s, prev, baro) {
   return a;
 }
 
+// Rapidos: se leen en cada vuelta (tablero fluido y deteccion de cortes en los sensores de 5 V).
+// Lentos: rotan de a 2 por vuelta; entre lecturas se usa el ultimo valor conocido.
+export const FAST = [0x0C, 0x0D, 0x0B, 0x49, 0x4A, 0x23];
+export const SLOW = [0x05, 0x2F, 0x42, 0x04, 0x33, 0x2C, 0x2D, 0x6A];
+const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+
 export class TripLogger {
   constructor(diag, ui) { this.diag = diag; this.ui = ui; this.stop = false; }
   async run() {
     const sup = supportedSet(this.diag);
-    const pids = TRIP_PIDS.filter((p) => sup.has(p));
+    const fast = FAST.filter((p) => sup.has(p)), slow = SLOW.filter((p) => sup.has(p));
+    const pids = [...fast, ...slow];
     const t0 = Date.now();
     const trip = { id: new Date(t0).toISOString(), inicio: new Date(t0).toISOString(), pids: pids.map((p) => ALL[p][0]),
-      muestras: 0, columnas: ['ms', ...pids.map((p) => ALL[p][0])], stats: {}, eventos: [], dtc_inicio: [], dtc_fin: [], mil_inicio: null, mil_fin: null };
+      muestras: 0, columnas: ['ms', ...pids.map((p) => ALL[p][0])], stats: {}, eventos: [], dtc_inicio: [], dtc_fin: [], mil_inicio: null, mil_fin: null,
+      km: 0, nivel_inicio: null, nivel_fin: null, ultimo: {} };
     trip.dtc_inicio = await readDtcs(this.diag); trip.mil_inicio = await readMil(this.diag);
     let lastDtc = trip.dtc_inicio.join(','), lastMil = trip.mil_inicio, nextDtc = Date.now() + DTC_EVERY_MS;
     const ring = []; let prev = null, pend = []; let lastSave = Date.now();
-    const baro = sup.has(0x33) ? await readAny(this.diag, 0x33) : null;
-    const event = (motivo, s) => {
+    const cur = {}; // ultimo valor conocido de cada PID
+    for (const p of slow) cur[p] = await readAny(this.diag, p);
+    const baro = cur[0x33] ?? null;
+    // combustible: mediana de lecturas con la camioneta quieta (en movimiento el gasoil se mueve)
+    const nivStart = [], nivEnd = []; let lastSpeedT = null, lastSpeed = null, si = 0;
+    const event = (motivo) => {
       if (trip.eventos.length >= MAX_EVENTS) return;
       const ev = { t: new Date().toISOString(), seg: Math.round((Date.now() - t0) / 1000), motivo, antes: ring.slice(), despues: [] };
       trip.eventos.push(ev); pend.push(ev); this.ui(trip, motivo);
     };
     while (!this.stop) {
-      const s = { ts: Date.now() - t0 };
-      for (const p of pids) { if (this.stop) break; s[p] = await readAny(this.diag, p); }
+      const fresh = {};
+      for (const p of fast) { if (this.stop) break; fresh[p] = await readAny(this.diag, p); }
+      for (let k = 0; k < 2 && slow.length && !this.stop; k++) { const p = slow[si++ % slow.length]; fresh[p] = await readAny(this.diag, p); }
       if (this.stop) break;
+      const now = Date.now();
+      Object.assign(cur, fresh);
       trip.muestras++;
-      for (const p of pids) { const v = s[p]; const st = (trip.stats[ALL[p][0]] ||= { min: null, max: null, sin_resp: 0 });
-        if (v === null) st.sin_resp++; else { st.min = st.min === null ? v : Math.min(st.min, v); st.max = st.max === null ? v : Math.max(st.max, v); } }
-      const row = [s.ts, ...pids.map((p) => s[p])];
+      // distancia: integra la velocidad entre lecturas (trapecio), ignora huecos > 10 s
+      const v = fresh[0x0D];
+      if (v != null) {
+        if (lastSpeed != null && now - lastSpeedT < 10000) trip.km += ((v + lastSpeed) / 2) * (now - lastSpeedT) / 3600000;
+        lastSpeed = v; lastSpeedT = now;
+      }
+      if (fresh[0x2F] != null && (cur[0x0D] ?? 0) === 0) {
+        if (trip.km < 0.2) { nivStart.push(fresh[0x2F]); if (nivStart.length > 15) nivStart.shift(); }
+        nivEnd.push(fresh[0x2F]); if (nivEnd.length > 15) nivEnd.shift();
+      }
+      trip.nivel_inicio = median(nivStart); trip.nivel_fin = median(nivEnd);
+      for (const [p, val] of Object.entries(fresh)) { const st = (trip.stats[ALL[p][0]] ||= { min: null, max: null, sin_resp: 0 });
+        if (val === null) st.sin_resp++; else { st.min = st.min === null ? val : Math.min(st.min, val); st.max = st.max === null ? val : Math.max(st.max, val); } }
+      const row = [now - t0, ...pids.map((p) => cur[p] ?? null)];
       for (const ev of pend) ev.despues.push(row);
       pend = pend.filter((ev) => ev.despues.length < AFTER);
-      const an = anomalies(Object.fromEntries(pids.map((p) => [p, s[p]])), prev, baro);
-      if (an.length) event(an.join('; '), s);
+      // "sin respuesta" solo cuenta para lo leido en esta vuelta
+      const an = anomalies(fresh, prev, baro);
+      for (const [p, val] of Object.entries(cur)) if (!(p in fresh)) fresh[p] = val;
+      if (an.length) event(an.join('; '));
       ring.push(row); if (ring.length > RING) ring.shift();
-      prev = Object.fromEntries(pids.map((p) => [p, s[p]]));
-      if (Date.now() > nextDtc) {
-        nextDtc = Date.now() + DTC_EVERY_MS;
+      prev = { ...cur };
+      trip.ultimo = { ...cur, baro };
+      if (now > nextDtc) {
+        nextDtc = now + DTC_EVERY_MS;
         const dt = await readDtcs(this.diag), mil = await readMil(this.diag);
-        if (dt.join(',') !== lastDtc) event(`Codigos cambiaron: [${lastDtc}] -> [${dt.join(',')}]`, s);
-        if (mil !== lastMil) event(`Testigo MIL ${mil ? 'ENCENDIO' : 'se apago'}`, s);
-        lastDtc = dt.join(','); lastMil = mil;
+        if (dt.join(',') !== lastDtc) event(`Codigos cambiaron: [${lastDtc}] -> [${dt.join(',')}]`);
+        if (mil !== lastMil) event(`Testigo MIL ${mil ? 'ENCENDIO' : 'se apago'}`);
+        lastDtc = dt.join(','); lastMil = mil; trip.dtc_actual = dt; trip.mil_actual = mil;
       }
-      if (Date.now() - lastSave > 30000) { trip.fin = new Date().toISOString(); await saveTrip(trip).catch(() => {}); lastSave = Date.now(); }
+      if (now - lastSave > 30000) { trip.fin = new Date().toISOString(); await saveTrip(trip).catch(() => {}); lastSave = now; }
       this.ui(trip);
     }
     trip.dtc_fin = await readDtcs(this.diag).catch(() => []); trip.mil_fin = await readMil(this.diag).catch(() => null);
     trip.fin = new Date().toISOString(); trip.duracion_min = Math.round((Date.now() - t0) / 600) / 100;
+    trip.km = Math.round(trip.km * 100) / 100;
     await saveTrip(trip);
     return trip;
   }
 }
 
-export function tripsText(trips) {
-  return trips.sort((a, b) => a.id.localeCompare(b.id)).map((t) => [
+// Consumo: por viaje, (nivel inicio - nivel fin) * capacidad del tanque. Solo es fiable
+// sumando muchos km; un 1 % de tanque son ~0,76 L.
+export function fuelSummary(trips, tankL) {
+  let km = 0, litros = 0, usados = 0;
+  for (const t of trips) {
+    if (!t.km) continue;
+    km += t.km;
+    if (t.nivel_inicio != null && t.nivel_fin != null && t.nivel_inicio >= t.nivel_fin) { litros += (t.nivel_inicio - t.nivel_fin) / 100 * tankL; usados++; }
+  }
+  return { km: Math.round(km * 10) / 10, litros: Math.round(litros * 10) / 10, viajes: trips.length, viajes_con_nivel: usados,
+    l100: km >= 50 && litros > 0 ? Math.round(litros / km * 1000) / 10 : null };
+}
+
+export function tripsText(trips, tankL = 76) {
+  const f = fuelSummary(trips, tankL);
+  const head = `RESUMEN: ${f.viajes} viajes, ${f.km} km, ~${f.litros} L (tanque ${tankL} L) -> ${f.l100 ?? 'faltan km (min 50)'} L/100km\n\n`;
+  return head + trips.sort((a, b) => a.id.localeCompare(b.id)).map((t) => [
     `=== VIAJE ${t.inicio} (${t.duracion_min ?? '?'} min, ${t.muestras} muestras) ===`,
+    `Km: ${t.km ?? '?'} | Nivel tanque inicio ${t.nivel_inicio ?? '?'}% fin ${t.nivel_fin ?? '?'}%`,
     `Codigos inicio: ${t.dtc_inicio.join(', ') || '-'} | fin: ${(t.dtc_fin || []).join(', ') || '-'} | MIL inicio ${t.mil_inicio ? 'ON' : 'off'} fin ${t.mil_fin ? 'ON' : 'off'}`,
     ...Object.entries(t.stats).map(([k, s]) => `  ${k}: min ${s.min ?? '-'} max ${s.max ?? '-'}${s.sin_resp ? ` (${s.sin_resp} sin resp.)` : ''}`),
     `Eventos: ${t.eventos.length}`,

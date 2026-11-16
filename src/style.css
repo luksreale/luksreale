@@ -13,3 +13,26 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--card);padding:12
 .g{display:grid;grid-template-columns:1fr 1fr;gap:8px}.v{background:var(--card);border-radius:10px;padding:10px}
 .v b{display:block;font-size:22px}.v small{color:var(--mut);font-size:12px}
 .foot{color:var(--mut);font-size:12px;text-align:center}
+
+/* ---- tablero */
+body.dash #acts button:not(#bStop),body.dash #out,body.dash #trips,body.dash .foot{display:none}
+.tacho{width:100%;max-width:420px;display:block;margin:0 auto}
+.tacho .trk{fill:none;stroke:#26323a;stroke-width:12;stroke-linecap:round}
+.tacho .red{fill:none;stroke:var(--bad);stroke-width:12;opacity:.45}
+.tacho .val{fill:none;stroke:var(--ac);stroke-width:12;stroke-linecap:round;transition:d .25s}
+.tacho .val.hot{stroke:var(--bad)}
+.tacho .tk{stroke:var(--mut);stroke-width:1.5}.tacho .tl{fill:var(--mut);font-size:9px;text-anchor:middle}
+.tacho .spd{fill:var(--tx);font-size:44px;font-weight:700;text-anchor:middle}
+.tacho .su{fill:var(--mut);font-size:9px;text-anchor:middle}
+.tacho .rpm{fill:var(--ac);font-size:13px;font-weight:600;text-anchor:middle}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+.tile{background:var(--card);border-radius:12px;padding:10px 12px;position:relative;border:1px solid transparent}
+.tile small{display:block;color:var(--mut);font-size:12px}.tile b{font-size:24px;font-variant-numeric:tabular-nums}.tile i{color:var(--mut);font-style:normal;font-size:12px;margin-left:4px}
+.tile .bar{display:block;height:4px;background:#26323a;border-radius:2px;margin-top:6px;overflow:hidden}
+.tile .bar span{display:block;height:100%;width:0;background:var(--ok);transition:width .3s}
+.tile.warn{border-color:var(--bad)}.tile.warn .bar span{background:var(--bad)}.tile.warn b{color:var(--bad)}
+.tripbar{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px;background:var(--card);border-radius:12px;padding:10px}
+.tripbar small{display:block;color:var(--mut);font-size:11px}.tripbar b{font-size:18px;font-variant-numeric:tabular-nums}.tripbar i{color:var(--mut);font-style:normal;font-size:11px;margin-left:2px}
+#evb{background:var(--bad);color:#fff;border-radius:10px;padding:10px 12px;font-weight:600;margin-bottom:6px;font-size:14px}
+.dnote{color:var(--mut);font-size:12px;text-align:center;margin:8px 0 0}
+label{color:var(--mut);font-size:14px}
