@@ -5,7 +5,7 @@ import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.j
 import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.7.1';
+const VERSION = '0.7.2';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;

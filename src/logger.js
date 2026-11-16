@@ -25,36 +25,48 @@ export const saveTrip = (trip) => tx('readwrite', (s) => s.put(trip));
 export const listTrips = () => tx('readonly', (s) => s.getAll());
 export const clearTrips = () => tx('readwrite', (s) => s.clear());
 
+// Devuelve null si el ECM no contesto al modo 03: un fallo de lectura no es "codigos borrados".
 async function readDtcs(diag) {
-  const out = [];
+  const out = []; let got = false;
   for (const [mode, tag] of [['03', ''], ['07', ' (pend)']]) {
     const resp = parseInt(mode, 16) + 0x40;
     for (const msgs of Object.values(await diag.q(mode, 4000))) for (const m of msgs) if (m[0] === resp) {
+      if (mode === '03') got = true;
       const d = m.slice(2); for (let i = 0; i + 1 < d.length; i += 2) if (d[i] || d[i + 1]) out.push(dtcStr(d[i], d[i + 1]) + tag);
     }
   }
-  return out.sort();
+  return got ? out.sort() : null;
 }
 async function readMil(diag) {
   for (const msgs of Object.values(await diag.q('0101'))) for (const m of msgs) if (m[0] === 0x41 && m[1] === 1) return !!(m[2] & 0x80);
   return null;
 }
 
-// Reglas de anomalia para una muestra s = {pid: valor|null}
-function anomalies(s, prev, baro) {
-  const a = [], rpm = s[0x0C] ?? 0;
-  for (const [p, v] of Object.entries(s)) if (v === null && prev && prev[p] !== null && prev[p] !== undefined) a.push(`${ALL[p][0]} sin respuesta`);
-  const d = s[0x49], e = s[0x4A];
-  if (d != null && e != null && Math.abs(e - d / 2) > 6) a.push(`Pedal D ${d}% / E ${e}% no concuerdan`);
+// Reglas de anomalia. Ajustadas con viajes reales de la S10 para no confundir conducir con fallas:
+// - un PID que no contesta una vez es un corte del Bluetooth, no del sensor: se marca a la 2da seguida;
+// - pedal D/E: solo con el pedal D quieto y si el desacuerdo se repite 2 lecturas (se leen a ~0,1 s);
+// - saltos de MAP o rail solo cuentan con el pie quieto (al soltar o cambiar de marcha caen normalmente);
+// - con la mariposa cerrada (apagado del motor) el MAP cae a vacio: no es falla;
+// - RPM desconocida (null) no se toma como "motor parado".
+export function anomalies(s, prev, baro, cur, miss) {
+  const a = [];
+  for (const [p, v] of Object.entries(s)) {
+    if (v === null) { miss[p] = (miss[p] || 0) + 1; if (miss[p] === 2) a.push(`${ALL[p][0]} sin respuesta (2 lecturas seguidas)`); } else miss[p] = 0;
+  }
+  const rpm = s[0x0C], mariposa = cur[0x6A] ?? 100;
+  const d = s[0x49], e = s[0x4A], pd = prev ? prev[0x49] : null, pe = prev ? prev[0x4A] : null;
+  const pieQuieto = d != null && pd != null && Math.abs(d - pd) < 2;
+  // desfase D/E: con el pedal D quieto y repetido en 2 lecturas seguidas (no es un desfase de tiempo)
+  if (pieQuieto && e != null && Math.abs(e - d / 2) > 6) { miss.pedal = (miss.pedal || 0) + 1; if (miss.pedal === 2) a.push(`Pedal D ${d}% / E ${e}% no concuerdan (pie quieto, 2 lecturas)`); } else miss.pedal = 0;
   if (d != null && (d < 3 || d > 97)) a.push(`Pedal D en extremo (${d}%)`);
   if (e != null && (e < 1 || e > 97)) a.push(`Pedal E en extremo (${e}%)`);
   const map = s[0x0B];
-  if (map != null && baro && rpm === 0 && Math.abs(map - baro) > 10) a.push(`MAP ${map} vs baro ${baro} con motor parado`);
-  if (map != null && rpm > 400 && map < 40) a.push(`MAP muy bajo (${map} kPa) en marcha`);
+  if (map != null && baro && rpm === 0 && (cur[0x0D] ?? 0) === 0 && Math.abs(map - baro) > 10) a.push(`MAP ${map} vs baro ${baro} con motor parado`);
+  if (map != null && rpm != null && rpm > 400 && mariposa > 10 && map < 40) a.push(`MAP muy bajo (${map} kPa) en marcha`);
   const rail = s[0x23];
-  if (rail != null && rpm > 600 && rail < 15000) a.push(`Presion rail baja (${rail} kPa) en marcha`);
-  if (prev) for (const [p, lim] of [[0x0B, 60], [0x23, 60000]]) {
-    if (s[p] != null && prev[p] != null && Math.abs(s[p] - prev[p]) > lim) a.push(`Salto en ${ALL[p][0]}: ${prev[p]} -> ${s[p]}`);
+  if (rail != null && rpm != null && rpm > 600 && mariposa > 10 && rail < 15000) a.push(`Presion rail baja (${rail} kPa) en marcha`);
+  if (prev && pieQuieto && mariposa > 10) for (const [p, lim] of [[0x0B, 60], [0x23, 60000]]) {
+    if (s[p] != null && prev[p] != null && Math.abs(s[p] - prev[p]) > lim) a.push(`Salto en ${ALL[p][0]} con el pie quieto: ${prev[p]} -> ${s[p]}`);
   }
   return a;
 }
@@ -75,10 +87,11 @@ export class TripLogger {
     const trip = { id: new Date(t0).toISOString(), inicio: new Date(t0).toISOString(), pids: pids.map((p) => ALL[p][0]),
       muestras: 0, columnas: ['ms', ...pids.map((p) => ALL[p][0])], stats: {}, eventos: [], dtc_inicio: [], dtc_fin: [], mil_inicio: null, mil_fin: null,
       km: 0, nivel_inicio: null, nivel_fin: null, ultimo: {} };
-    trip.dtc_inicio = await readDtcs(this.diag); trip.mil_inicio = await readMil(this.diag);
+    trip.dtc_inicio = (await readDtcs(this.diag)) ?? []; trip.mil_inicio = await readMil(this.diag);
     let lastDtc = trip.dtc_inicio.join(','), lastMil = trip.mil_inicio, nextDtc = Date.now() + DTC_EVERY_MS;
     const ring = []; let prev = null, pend = []; let lastSave = Date.now();
     const cur = {}; // ultimo valor conocido de cada PID
+    const miss = {}; // lecturas sin respuesta seguidas por PID
     for (const p of slow) cur[p] = await readAny(this.diag, p);
     const baro = cur[0x33] ?? null;
     // combustible: mediana de lecturas con la camioneta quieta (en movimiento el gasoil se mueve)
@@ -113,8 +126,7 @@ export class TripLogger {
       for (const ev of pend) ev.despues.push(row);
       pend = pend.filter((ev) => ev.despues.length < AFTER);
       // "sin respuesta" solo cuenta para lo leido en esta vuelta
-      const an = anomalies(fresh, prev, baro);
-      for (const [p, val] of Object.entries(cur)) if (!(p in fresh)) fresh[p] = val;
+      const an = anomalies(fresh, prev, baro, cur, miss);
       if (an.length) event(an.join('; '));
       ring.push(row); if (ring.length > RING) ring.shift();
       prev = { ...cur };
@@ -122,14 +134,15 @@ export class TripLogger {
       if (now > nextDtc) {
         nextDtc = now + DTC_EVERY_MS;
         const dt = await readDtcs(this.diag), mil = await readMil(this.diag);
-        if (dt.join(',') !== lastDtc) event(`Codigos cambiaron: [${lastDtc}] -> [${dt.join(',')}]`);
-        if (mil !== lastMil) event(`Testigo MIL ${mil ? 'ENCENDIO' : 'se apago'}`);
-        lastDtc = dt.join(','); lastMil = mil; trip.dtc_actual = dt; trip.mil_actual = mil;
+        if (dt !== null && dt.join(',') !== lastDtc) event(`Codigos cambiaron: [${lastDtc}] -> [${dt.join(',')}]`);
+        if (mil !== null && mil !== lastMil) event(`Testigo MIL ${mil ? 'ENCENDIO' : 'se apago'}`);
+        if (dt !== null) { lastDtc = dt.join(','); trip.dtc_actual = dt; }
+        if (mil !== null) { lastMil = mil; trip.mil_actual = mil; }
       }
       if (now - lastSave > 30000) { trip.fin = new Date().toISOString(); await saveTrip(trip).catch(() => {}); lastSave = now; }
       this.ui(trip);
     }
-    trip.dtc_fin = await readDtcs(this.diag).catch(() => []); trip.mil_fin = await readMil(this.diag).catch(() => null);
+    trip.dtc_fin = (await readDtcs(this.diag).catch(() => null)) ?? (trip.dtc_actual || trip.dtc_inicio); trip.mil_fin = await readMil(this.diag).catch(() => null);
     trip.fin = new Date().toISOString(); trip.duracion_min = Math.round((Date.now() - t0) / 600) / 100;
     trip.km = Math.round(trip.km * 100) / 100;
     await saveTrip(trip);
