@@ -1,9 +1,9 @@
 import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
-import { ALL, readAny, extraSnapshot, gmModules, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
+import { ALL, readAny, extraSnapshot, gmModules, addressingTest, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -163,7 +163,14 @@ $('bFull').onclick = async () => {
     await diag.adapterTest(); await diag.info(); await diag.supported(); await diag.status();
     await diag.obdDtcs(); await diag.freeze(); await diag.snapshot();
     Object.assign(diag.r.valores_actuales['7E8'], await extraSnapshot(diag));
-    diag.r.modulos = await gmModules(diag, prog);
+    prog('Probando direccionamiento del adaptador...');
+    const dir = await addressingTest(diag);
+    diag.r.test_adaptador.direccionamiento = dir.txt;
+    if (dir.ok) diag.r.modulos = await gmModules(diag, prog);
+    else {
+      diag.r.test_adaptador.veredicto = 'Limitado: solo datos OBD del ECM (no puede dirigirse a otros modulos)';
+      diag.r.modulos = { '-': { nombre: 'busqueda omitida: este adaptador no puede dirigirse a modulos individuales', codigos: [], nota: 'hace falta un adaptador que respete ATSH/ATCRA (p.ej. OBDLink o un ELM327 de calidad)' } };
+    }
     diag.r.hallazgos = [...ref5vHints(diag.r), ...analyzeSnapshot(diag.r)];
     report = reportText(diag.r);
     $('rep').textContent = report; $('out').hidden = false; prog('Diagnóstico terminado.');
@@ -175,6 +182,8 @@ $('bTest').onclick = async () => {
   if (busy) return; lock(true);
   try {
     const t = await diag.adapterTest();
+    const dir = await addressingTest(diag); t.direccionamiento = dir.txt;
+    if (!dir.ok) t.veredicto = 'Limitado: solo datos OBD del ECM (no puede dirigirse a otros modulos)';
     report = Object.entries(t).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n');
     $('rep').textContent = report; $('out').hidden = false; prog('Test terminado.');
   } catch (e) { prog('Error: ' + e.message); }

@@ -86,3 +86,15 @@ export function ref5vHints(r) {
     if (REF5V[c]) out.push(['ALTO', `${ecu}: ${c} = falla en ${REF5V[c]} de sensores. Usar "Sensores 5V" en vivo y mover mazos/fichas con motor en marcha: el sensor que salta a 0 o al maximo junto con el movimiento esta en el circuito afectado`]);
   return out;
 }
+
+// Muchos clones ELM327 v1.5 responden OK a ATSH/ATCRA pero los ignoran: entonces todo pedido
+// "a un modulo" lo contesta el ECM. Prueba real: pedir 0100 a 7E7 (no existe en la S10);
+// si contesta 7E8, el adaptador no direcciona.
+export async function addressingTest(diag) {
+  await diag.target(0x7E7, 0x7EF);
+  const res = await diag.q('0100', 1500);
+  await diag.resetTarget();
+  const ids = Object.keys(res);
+  if (!ids.length) return { ok: true, txt: 'OK (7E7 no responde, como corresponde)' };
+  return { ok: false, txt: `FALLA: un pedido a 7E7 lo contesto ${ids.join(',')} -> el adaptador ignora ATSH/ATCRA` };
+}
