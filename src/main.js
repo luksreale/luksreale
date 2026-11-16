@@ -1,10 +1,11 @@
 import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
+import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.js';
 import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -13,15 +14,16 @@ let link = null, elm = null, diag = null, stopLive = false, busy = false, report
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
-function setStatus(t) { $('st').textContent = t; }
+function setStatus(t) { $('st').textContent = t; $('st').classList.toggle('on', t.startsWith('Conectado')); }
 function prog(t) { $('prog').textContent = t; }
-function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function lock(on) { busy = on; document.querySelectorAll('#acts button:not(#bStop)').forEach((b) => (b.disabled = on)); }
+function lock(on) { busy = on; document.body.classList.toggle('busy', on); document.querySelectorAll('#acts button').forEach((b) => (b.disabled = on)); }
+function showStop(on) { $('bStop').hidden = !on; document.body.classList.toggle('fabon', on); }
+function showOut(html, text) { $('repv').innerHTML = html; $('rep').textContent = text; $('out').hidden = false; }
 
 let kind = store.get('kind') || 'spp'; // 'spp' (clasico) o 'ble'
 $('mac').value = store.get('mac') || '';
 $('mac').oninput = () => { kind = 'spp'; };
-document.querySelector('.foot').append(` · v${VERSION}`);
+document.querySelector('.foot span').append(` · v${VERSION}`);
 
 function btError(e, pre) {
   const m = String((e && e.message) || e);
@@ -116,16 +118,16 @@ $('bScan').onclick = async () => {
     catch (e) { sppErr = e; }
     const list = [...ble.list, ...spp].filter((d) => d.name)
       .sort((a, b) => looksElm(b.name) - looksElm(a.name));
-    $('devs').innerHTML = list.length ? list.map((d) =>
-      `<div class="dev" data-k="${d.kind}" data-a="${esc(d.id)}"><b>${esc(d.name || 'sin nombre')}</b> <small>${d.kind === 'ble' ? 'BLE' : 'Clásico'}</small><br><small>${esc(d.id)}</small></div>`).join('')
-      : '<p>No se encontró nada. Probá de nuevo o escribí la MAC.</p>';
+    $('devs').innerHTML = list.length ? list.map((d) => deviceItem(d, looksElm)).join('')
+      : '<p>No se encontró ningún adaptador. Verificá que esté enchufado y con contacto, y probá de nuevo.</p>';
     document.querySelectorAll('.dev').forEach((el) => (el.onclick = () => {
-      document.querySelectorAll('.dev').forEach((x) => (x.style.outline = ''));
-      el.style.outline = '2px solid var(--ac)'; $('mac').value = el.dataset.a; kind = el.dataset.k;
+      document.querySelectorAll('.dev').forEach((x) => x.classList.remove('sel'));
+      el.classList.add('sel'); $('mac').value = el.dataset.a; kind = el.dataset.k;
     }));
+    const first = document.querySelector('.dev'); if (first && list.length && looksElm(list[0].name)) first.click();
     const err = ble.err || sppErr;
     prog(err && !list.length ? btError(err, 'Error buscando')
-      : 'Tocá tu ELM (suele llamarse OBDII) y después Conectar. Si aparece dos veces, probá primero el que dice BLE.');
+      : list.length ? 'Elegí tu adaptador (suele llamarse OBDII) y tocá Conectar.' : '');
   } catch (e) { prog(btError(e, 'Error buscando')); }
   finally { $('bScan').disabled = false; }
 };
@@ -142,9 +144,11 @@ $('bConn').onclick = async () => {
     lock(true);
     await diag.init();
     await diag.supported();
-    setStatus('Conectado · ' + (diag.r.bateria || ''));
+    try { await diag.info(); } catch {}
+    $('veh').innerHTML = vehicleCard(diag.r);
+    setStatus('Conectado');
     $('conn').hidden = true; $('acts').hidden = false;
-    prog('Listo. Protocolo ' + diag.r.protocolo);
+    prog('');
   } catch (e) {
     const m = btError(e, 'No se pudo conectar');
     prog(kind === 'spp' && /failed to connect/i.test(m)
@@ -174,7 +178,8 @@ $('bFull').onclick = async () => {
     }
     diag.r.hallazgos = [...ref5vHints(diag.r), ...analyzeSnapshot(diag.r)];
     report = reportText(diag.r);
-    $('rep').textContent = report; $('out').hidden = false; prog('Diagnóstico terminado.');
+    showOut(renderReport(diag.r), report); $('veh').innerHTML = vehicleCard(diag.r); prog('Diagnóstico terminado.');
+    $('out').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) { prog('Error: ' + e.message); }
   finally { lock(false); }
 };
@@ -186,7 +191,7 @@ $('bTest').onclick = async () => {
     const dir = await addressingTest(diag); t.direccionamiento = dir.txt;
     if (!dir.ok) t.veredicto = 'Limitado: solo datos OBD del ECM (no puede dirigirse a otros modulos)';
     report = Object.entries(t).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n');
-    $('rep').textContent = report; $('out').hidden = false; prog('Test terminado.');
+    showOut(renderSimple('Prueba del adaptador', report.split('\n')), report); prog('Prueba terminada.');
   } catch (e) { prog('Error: ' + e.message); }
   finally { lock(false); }
 };
@@ -196,7 +201,7 @@ async function live(want, title) {
   const sup = supportedSet(diag);
   const pids = want.filter((p) => sup.has(p) && ALL[p]);
   const st = {}; let vueltas = 0;
-  $('bStop').hidden = false; $('live').hidden = false;
+  showStop(true); $('live').hidden = false; $('out').hidden = true;
   $('live').innerHTML = '<div class="g">' + pids.map((p) => `<div class="v"><small>${esc(ALL[p][0])}</small><b id="p${p}">-</b><small>${esc(ALL[p][1])} · <span id="m${p}">min - / max -</span></small></div>`).join('') + '</div>';
   prog(`${title}: leyendo... (min/max se registran hasta que toques Detener)`);
   try {
@@ -214,8 +219,8 @@ async function live(want, title) {
   } catch (e) { prog('Error: ' + e.message); }
   report = [`${title} - ${new Date().toISOString()} - ${vueltas} vueltas`, ...pids.map((p) => { const s = st[p] || {};
     return `${ALL[p][0]}: min ${s.min ?? '-'} / max ${s.max ?? '-'} ${ALL[p][1]} (${s.n || 0} lecturas, ${s.sinResp || 0} sin respuesta)`; })].join('\n');
-  $('rep').textContent = report; $('out').hidden = false;
-  $('bStop').hidden = true; lock(false); prog('Detenido. Resumen min/max abajo: Copiar reporte para pasarlo.');
+  showOut(renderSimple(`${title}: mínimos y máximos`, report.split('\n').slice(1)), report);
+  showStop(false); lock(false); prog('Detenido. Abajo tenés el resumen de mínimos y máximos.');
 }
 $('bLive').onclick = () => live(LIVE_GENERAL, 'Datos en vivo');
 $('b5v').onclick = () => live(LIVE_5V, 'Sensores 5V');
@@ -224,7 +229,7 @@ $('bStop').onclick = () => { stopLive = true; };
 $('bDisc').onclick = async () => {
   stopLive = true;
   try { if (link) await link.close(); } catch {}
-  link = null; $('acts').hidden = true; $('conn').hidden = false; $('live').hidden = true; setStatus('Desconectado'); prog('');
+  link = null; $('acts').hidden = true; $('conn').hidden = false; $('live').hidden = true; $('out').hidden = true; showStop(false); setStatus('Desconectado'); prog('');
 };
 
 async function copy(text) {
@@ -243,7 +248,7 @@ let semana = { km: 0, litros: 0 };
 async function refreshTrips() {
   try {
     const t = await listTrips(); const n = t.length;
-    $('bTrips').textContent = `Copiar registros (${n} viaje${n === 1 ? '' : 's'})`;
+    $('bTrips').textContent = `Copiar · ${n} viaje${n === 1 ? '' : 's'}`;
     semana = fuelSummary(t, tankL());
   } catch {}
 }
@@ -318,7 +323,7 @@ $('bTrip').onclick = async () => {
   let wake = null; try { wake = await navigator.wakeLock?.request('screen'); } catch {}
   await refreshTrips();
   document.body.classList.add('dash');
-  $('bStop').hidden = false; $('live').hidden = false;
+  showStop(true); $('live').hidden = false; $('out').hidden = true;
   $('live').innerHTML = dashHtml();
   let evTimer = null;
   trip = new TripLogger(diag, (t, ev) => {
@@ -331,7 +336,7 @@ $('bTrip').onclick = async () => {
   catch (e) { prog('Error en registro (lo grabado hasta ahora quedó guardado): ' + e.message); }
   try { await wake?.release(); } catch {}
   document.body.classList.remove('dash');
-  trip = null; $('bStop').hidden = true; $('bStop').onclick = () => { stopLive = true; };
+  trip = null; showStop(false); $('bStop').onclick = () => { stopLive = true; };
   lock(false); refreshTrips();
 };
 $('bTrips').onclick = async () => {

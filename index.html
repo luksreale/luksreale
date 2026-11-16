@@ -3,36 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f12">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
 <title>S10 Diag</title>
 <link rel="stylesheet" href="./src/style.css">
 </head>
 <body>
-<header><h1>S10 Diag</h1><span id="st">Desconectado</span></header>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0"/><path d="M12 15l4-5"/><circle cx="12" cy="15" r="1.6" class="fill"/></svg></span>
+    <div><b>S10 Diag</b><small>Duramax 2.8 · OBD-II</small></div>
+  </div>
+  <span id="st" class="pill">Desconectado</span>
+</header>
+
 <main>
-  <section id="conn">
-    <button id="bScan">Buscar ELM327</button>
-    <div id="devs"></div>
-    <div class="row"><input id="mac" placeholder="MAC (ej 00:1D:A5:68:98:8B)" autocomplete="off"><button id="bConn">Conectar</button></div>
+  <div id="prog" class="status" role="status" aria-live="polite"></div>
+
+  <!-- Inicio: conexion -->
+  <section id="conn" class="screen">
+    <div class="card hero">
+      <span class="hero-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg></span>
+      <h2>Conectá tu adaptador</h2>
+      <ol class="steps">
+        <li><span>1</span>Enchufá el ELM327 en el conector OBD, debajo del volante.</li>
+        <li><span>2</span>Poné el contacto o arrancá el motor.</li>
+        <li><span>3</span>Buscá tu adaptador y elegilo de la lista.</li>
+      </ol>
+      <button id="bScan" class="btn primary lg"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Buscar adaptador</button>
+    </div>
+    <div id="devs" class="devlist"></div>
+    <details class="card manual">
+      <summary>Ingresar dirección manualmente</summary>
+      <input id="mac" placeholder="00:1D:A5:68:98:8B" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    </details>
+    <button id="bConn" class="btn primary lg">Conectar</button>
   </section>
-  <section id="acts" hidden>
-    <button id="bFull">Diagnóstico completo</button>
-    <button id="bTest">Probar adaptador</button>
-    <button id="bLive">Datos en vivo</button>
-    <button id="b5v">Sensores 5V (P0641)</button>
-    <button id="bTrip">Tablero + registro de viaje</button>
-    <button id="bStop" hidden>Detener</button>
-    <button id="bDisc" class="sec">Desconectar</button>
+
+  <!-- Conectado: acciones -->
+  <section id="acts" class="screen" hidden>
+    <div class="card vehicle" id="veh"></div>
+    <div class="grid">
+      <button id="bTrip" class="act feature">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0"/><path d="M12 15l4-5"/></svg></span>
+        <b>Tablero</b><small>Instrumentos en vivo y registro de viaje</small>
+      </button>
+      <button id="bFull" class="act">
+        <span class="ic"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 11h6M9 15h4"/></svg></span>
+        <b>Diagnóstico</b><small>Códigos, monitores y cruces</small>
+      </button>
+      <button id="bLive" class="act">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M2 12h4l3-8 6 16 3-8h4"/></svg></span>
+        <b>Datos en vivo</b><small>Sensores con mín. y máx.</small>
+      </button>
+      <button id="b5v" class="act">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></span>
+        <b>Sensores 5V</b><small>Rastrear el P0641</small>
+      </button>
+      <button id="bTest" class="act">
+        <span class="ic"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg></span>
+        <b>Adaptador</b><small>Probar el ELM327</small>
+      </button>
+    </div>
+    <button id="bDisc" class="btn ghost">Desconectar</button>
   </section>
-  <div id="prog"></div>
+
   <section id="live" hidden></section>
+
   <section id="out" hidden>
-    <div class="row"><button id="bCopy">Copiar reporte</button><button id="bRaw" class="sec">Copiar log crudo</button></div>
-    <pre id="rep"></pre>
+    <div id="repv"></div>
+    <div class="row">
+      <button id="bCopy" class="btn primary"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copiar reporte</button>
+      <button id="bRaw" class="btn secondary">Copiar log</button>
+    </div>
+    <details class="card raw"><summary>Ver texto completo</summary><pre id="rep"></pre></details>
   </section>
-  <section id="trips"><div class="row"><label for="tank">Tanque (litros)</label><input id="tank" type="number" min="20" max="200" step="1" inputmode="numeric"></div><div class="row"><button id="bTrips" class="sec">Copiar registros</button><button id="bClr" class="sec">Borrar registros</button></div></section>
-  <p class="foot">Solo lectura: esta app no borra códigos ni modifica nada en la camioneta.</p>
+
+  <section id="trips" class="card">
+    <div class="sec-h"><svg viewBox="0 0 24 24"><path d="M3 12h4l2 5 4-10 2 5h6"/></svg><h3>Registros de viaje</h3></div>
+    <div class="field"><label for="tank">Capacidad del tanque</label><div class="inp-u"><input id="tank" type="number" min="20" max="200" step="1" inputmode="numeric"><span>litros</span></div></div>
+    <div class="row">
+      <button id="bTrips" class="btn secondary">Copiar registros</button>
+      <button id="bClr" class="btn ghost danger-t">Borrar</button>
+    </div>
+  </section>
+
+  <p class="foot"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span>Solo lectura: no borra códigos ni modifica nada en la camioneta.</span></p>
 </main>
+
+<button id="bStop" class="btn danger fab" hidden><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Detener</button>
+
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
