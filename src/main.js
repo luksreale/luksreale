@@ -1,9 +1,10 @@
 import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
+import { TripLogger, listTrips, clearTrips, tripsText } from './logger.js';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.5.0';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -232,3 +233,35 @@ async function copy(text) {
 }
 $('bCopy').onclick = () => copy(report);
 $('bRaw').onclick = () => copy(JSON.stringify(elm ? elm.log.slice(-3000) : []));
+
+// ---- Registro de viaje
+let trip = null;
+async function refreshTrips() {
+  try { const n = (await listTrips()).length; $('bTrips').textContent = `Copiar registros (${n} viaje${n === 1 ? '' : 's'})`; } catch {}
+}
+refreshTrips();
+$('bTrip').onclick = async () => {
+  if (busy) return; lock(true); stopLive = false;
+  let wake = null; try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+  $('bStop').hidden = false; $('live').hidden = false;
+  $('live').innerHTML = '<p>Grabando viaje. Dejá la app abierta y en pantalla (con cargador). Tocá Detener al llegar.</p><pre id="tripst"></pre>';
+  trip = new TripLogger(diag, (t, ev) => {
+    const mins = ((Date.now() - Date.parse(t.inicio)) / 60000).toFixed(1);
+    $('tripst').textContent = `${mins} min · ${t.muestras} muestras · ${t.eventos.length} eventos` + (t.eventos.length ? `\nUltimo: ${t.eventos[t.eventos.length - 1].motivo}` : '');
+    if (ev) prog('EVENTO: ' + ev);
+  });
+  $('bStop').onclick = () => { stopLive = true; if (trip) trip.stop = true; };
+  prog('Registro de viaje en curso...');
+  try { const t = await trip.run(); prog(`Viaje guardado: ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
+  catch (e) { prog('Error en registro (lo grabado hasta ahora quedó guardado): ' + e.message); }
+  try { await wake?.release(); } catch {}
+  trip = null; $('bStop').hidden = true; $('bStop').onclick = () => { stopLive = true; };
+  lock(false); refreshTrips();
+};
+$('bTrips').onclick = async () => {
+  try { const t = await listTrips(); if (!t.length) return prog('No hay viajes guardados.'); await copy(tripsText(t)); } catch (e) { prog('Error leyendo registros: ' + e.message); }
+};
+$('bClr').onclick = async () => {
+  if (!confirm('¿Borrar todos los viajes guardados?')) return;
+  try { await clearTrips(); prog('Registros borrados.'); refreshTrips(); } catch (e) { prog('Error: ' + e.message); }
+};
