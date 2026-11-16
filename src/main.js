@@ -2,7 +2,7 @@ import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, PIDS, reportText } from './elm.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -69,11 +69,22 @@ async function bleOpen(id) {
 
 async function sppOpen(mac) {
   await BT.connect({ address: mac }); // el plugin no implementa connectInsecure en Android
+  // El plugin cierra la conexion cuando la app pasa a segundo plano (handleOnStop -> stopAll).
+  // Si una lectura/escritura falla, se reconecta una vez y se reintenta. El ELM sigue
+  // alimentado por la camioneta, asi que conserva la configuracion AT.
+  const retry = async (fn) => {
+    try { return await fn(); } catch (e) {
+      prog('Reconectando Bluetooth...');
+      await BT.connect({ address: mac });
+      prog('Reconectado.');
+      return fn();
+    }
+  };
   return {
     kind: 'spp', id: mac,
     transport: {
-      write: (v) => BT.write({ address: mac, value: v }),
-      read: async () => (await BT.read({ address: mac })).value || '',
+      write: (v) => retry(() => BT.write({ address: mac, value: v })),
+      read: () => retry(async () => (await BT.read({ address: mac })).value || ''),
     },
     close: () => BT.disconnect({ address: mac }),
   };
