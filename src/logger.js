@@ -73,6 +73,7 @@ export function anomalies(s, prev, baro, cur, miss) {
 
 // Rapidos: se leen en cada vuelta (tablero fluido y deteccion de cortes en los sensores de 5 V).
 // Lentos: rotan de a 2 por vuelta; entre lecturas se usa el ultimo valor conocido.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const FAST = [0x0C, 0x0D, 0x0B, 0x49, 0x4A, 0x23];
 export const SLOW = [0x05, 0x2F, 0x42, 0x04, 0x33, 0x2C, 0x2D, 0x6A];
 const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
@@ -101,10 +102,28 @@ export class TripLogger {
       const ev = { t: new Date().toISOString(), seg: Math.round((Date.now() - t0) / 1000), motivo, antes: ring.slice(), despues: [] };
       trip.eventos.push(ev); pend.push(ev); this.ui(trip, motivo);
     };
+    let fallos = 0;
     while (!this.stop) {
+      // En segundo plano (p.ej. WhatsApp) se pausa la lectura; al volver se sigue.
+      // El hueco no suma km (la integracion ignora huecos > 10 s).
+      if (typeof document !== 'undefined' && document.hidden) {
+        if (!trip.pausas) trip.pausas = 0;
+        trip.pausas++;
+        while (document.hidden && !this.stop) await sleep(400);
+        continue;
+      }
       const fresh = {};
-      for (const p of fast) { if (this.stop) break; fresh[p] = await readAny(this.diag, p); }
-      for (let k = 0; k < 2 && slow.length && !this.stop; k++) { const p = slow[si++ % slow.length]; fresh[p] = await readAny(this.diag, p); }
+      try {
+        for (const p of fast) { if (this.stop) break; fresh[p] = await readAny(this.diag, p); }
+        for (let k = 0; k < 2 && slow.length && !this.stop; k++) { const p = slow[si++ % slow.length]; fresh[p] = await readAny(this.diag, p); }
+        fallos = 0;
+      } catch (e) {
+        // corte de Bluetooth: se guarda lo grabado y se reintenta; tras 5 fallos seguidos se termina
+        if (++fallos >= 5) throw e;
+        await saveTrip(trip).catch(() => {});
+        await sleep(2000);
+        continue;
+      }
       if (this.stop) break;
       const now = Date.now();
       Object.assign(cur, fresh);

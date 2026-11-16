@@ -1,0 +1,68 @@
+diff --git a/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/BluetoothSerialService.java b/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/BluetoothSerialService.java
+index a75c7fb..c5d191f 100644
+--- a/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/BluetoothSerialService.java
++++ b/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/BluetoothSerialService.java
+@@ -242,7 +242,7 @@ public class BluetoothSerialService {
+         private String notificationDelimiter;
+         private final StringBuffer readBuffer;
+         private Consumer<String> notificationCallback;
+-        private ConnectionStatus status;
++        private volatile ConnectionStatus status;
+ 
+         @SuppressLint("MissingPermission")
+         public BluetoothConnection(BluetoothDevice device, boolean secure, BluetoothSerialPlugin plugin) {
+@@ -297,19 +297,26 @@ public class BluetoothSerialService {
+             Log.i(TAG, "BEGIN connectedThread");
+             byte[] bytesBuffer = new byte[1024];
+ 
+-            // Keep listening to the InputStream while connected
+-            while (true) {
+-                if (status == ConnectionStatus.CONNECTED) {
+-                    try {
+-                        // Read from the InputStream
+-                        int length = socketInputStream.read(bytesBuffer);
+-                        String data = new String(bytesBuffer, 0, length);
+-                        appendToBuffer(data);
+-                    } catch (IOException e) {
+-                        Log.e(TAG, "disconnected", e);
++            // Keep listening to the InputStream while connected.
++            // S10Diag: el bucle original era while(true) con un if: si la conexion fallaba o se
++            // cortaba, el hilo giraba en vacio al 100% de CPU para siempre y congelaba el telefono.
++            while (status == ConnectionStatus.CONNECTED) {
++                try {
++                    // Read from the InputStream (bloquea hasta que llegan datos)
++                    int length = socketInputStream.read(bytesBuffer);
++                    if (length < 0) {
++                        Log.i(TAG, "stream closed");
++                        status = ConnectionStatus.NOT_CONNECTED;
+                         disconnect();
+                         break;
+                     }
++                    String data = new String(bytesBuffer, 0, length);
++                    appendToBuffer(data);
++                } catch (IOException e) {
++                    Log.e(TAG, "disconnected", e);
++                    status = ConnectionStatus.NOT_CONNECTED;
++                    disconnect();
++                    break;
+                 }
+             }
+             Log.i(TAG, "END connectedThread");
+diff --git a/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/plugin/BluetoothSerialPlugin.java b/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/plugin/BluetoothSerialPlugin.java
+index 7b9f4f0..9d2d6cd 100644
+--- a/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/plugin/BluetoothSerialPlugin.java
++++ b/node_modules/@e-is/capacitor-bluetooth-serial/android/src/main/java/com/bluetoothserial/plugin/BluetoothSerialPlugin.java
+@@ -439,9 +439,11 @@ public class BluetoothSerialPlugin extends Plugin {
+         initializeService();
+     }
+ 
++    // S10Diag: no cortar la conexion al pasar a segundo plano (p.ej. abrir WhatsApp un momento);
++    // se cierra solo cuando la app se destruye.
+     @Override
+-    protected void handleOnStop() {
+-        super.handleOnStop();
++    protected void handleOnDestroy() {
++        super.handleOnDestroy();
+ 
+         if (service != null) {
+             getService().stopAll();

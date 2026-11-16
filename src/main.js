@@ -5,7 +5,7 @@ import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.j
 import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.7.2';
+const VERSION = '0.7.3';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -14,6 +14,16 @@ let link = null, elm = null, diag = null, stopLive = false, busy = false, report
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
+// En segundo plano Android frena la app: los loops esperan a que vuelva a estar visible.
+const whileHidden = async () => { while (document.hidden) await new Promise((r) => setTimeout(r, 400)); };
+let wakeWanted = false, wakeLock = null;
+async function keepAwake(on) {
+  wakeWanted = on;
+  try { if (on && !wakeLock) { wakeLock = await navigator.wakeLock?.request('screen'); wakeLock?.addEventListener?.('release', () => { wakeLock = null; }); } } catch {}
+  if (!on && wakeLock) { try { await wakeLock.release(); } catch {} wakeLock = null; }
+}
+// el bloqueo de pantalla se libera solo al salir de la app: se vuelve a pedir al regresar
+document.addEventListener('visibilitychange', () => { if (!document.hidden && wakeWanted) keepAwake(true); });
 function setStatus(t) { $('st').textContent = t; $('st').classList.toggle('on', t.startsWith('Conectado')); }
 function prog(t) { $('prog').textContent = t; }
 function lock(on) { busy = on; document.body.classList.toggle('busy', on); document.querySelectorAll('#acts button').forEach((b) => (b.disabled = on)); }
@@ -73,15 +83,23 @@ async function bleOpen(id) {
 
 async function sppOpen(mac) {
   await BT.connect({ address: mac }); // el plugin no implementa connectInsecure en Android
-  // El plugin cierra la conexion cuando la app pasa a segundo plano (handleOnStop -> stopAll).
-  // Si una lectura/escritura falla, se reconecta una vez y se reintenta. El ELM sigue
-  // alimentado por la camioneta, asi que conserva la configuracion AT.
+  // Si una lectura/escritura falla (p.ej. se corto el Bluetooth), se reconecta y se reintenta.
+  // Una sola reconexion a la vez: varios intentos simultaneos saturaban el telefono.
+  // El ELM sigue alimentado por la camioneta, asi que conserva la configuracion AT.
+  let reconnecting = null;
+  const reconnect = () => (reconnecting ||= (async () => {
+    prog('Reconectando Bluetooth...');
+    try { await BT.disconnect({ address: mac }); } catch {}
+    await BT.connect({ address: mac });
+    prog('Reconectado.');
+  })().finally(() => { reconnecting = null; }));
+  let degraded = false;
   const retry = async (fn) => {
-    try { return await fn(); } catch (e) {
-      prog('Reconectando Bluetooth...');
-      await BT.connect({ address: mac });
-      prog('Reconectado.');
-      return fn();
+    if (reconnecting) await reconnecting;
+    try { const r = await fn(); if (degraded) { degraded = false; prog('Conexión recuperada.'); } return r; } catch (e) {
+      degraded = true;
+      try { await reconnect(); } catch { throw new Error('Se perdió la conexión con el ELM327. Tocá Desconectar y volvé a conectar.'); }
+      const r = await fn(); degraded = false; return r;
     }
   };
   return {
@@ -207,6 +225,7 @@ async function live(want, title) {
   prog(`${title}: leyendo... (min/max se registran hasta que toques Detener)`);
   try {
     while (!stopLive) {
+      await whileHidden();
       for (const p of pids) {
         if (stopLive) break;
         const v = await readAny(diag, p);
@@ -321,7 +340,7 @@ function drawDash(t) {
 }
 $('bTrip').onclick = async () => {
   if (busy) return; lock(true); stopLive = false;
-  let wake = null; try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+  await keepAwake(true);
   await refreshTrips();
   document.body.classList.add('dash');
   showStop(true); $('live').hidden = false; $('out').hidden = true;
@@ -335,7 +354,7 @@ $('bTrip').onclick = async () => {
   prog('Grabando viaje: dejá la app abierta, en pantalla y con cargador. Tocá Detener al llegar.');
   try { const t = await trip.run(); prog(`Viaje guardado: ${fmt(t.km, 1)} km, ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
   catch (e) { prog('Error en registro (lo grabado hasta ahora quedó guardado): ' + e.message); }
-  try { await wake?.release(); } catch {}
+  await keepAwake(false);
   document.body.classList.remove('dash');
   trip = null; showStop(false); $('bStop').onclick = () => { stopLive = true; };
   lock(false); refreshTrips();
