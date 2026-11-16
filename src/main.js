@@ -1,8 +1,9 @@
 import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
-import { ELM, Diag, PIDS, reportText } from './elm.js';
+import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
+import { ALL, readAny, extraSnapshot, gmModules, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -157,7 +158,13 @@ $('bFull').onclick = async () => {
   if (busy) return; lock(true);
   try {
     diag.r = { fecha: new Date().toISOString(), adaptador: diag.r.adaptador, bateria: (await elm.cmd('ATRV')).join(' '), protocolo: diag.r.protocolo };
-    await diag.full();
+    // Igual que Diag.full() pero con la busqueda de modulos de extra.js (el ECM no responde a 3E00)
+    // y con los PIDs extra que ofrece este ECM.
+    await diag.adapterTest(); await diag.info(); await diag.supported(); await diag.status();
+    await diag.obdDtcs(); await diag.freeze(); await diag.snapshot();
+    Object.assign(diag.r.valores_actuales['7E8'], await extraSnapshot(diag));
+    diag.r.modulos = await gmModules(diag, prog);
+    diag.r.hallazgos = [...ref5vHints(diag.r), ...analyzeSnapshot(diag.r)];
     report = reportText(diag.r);
     $('rep').textContent = report; $('out').hidden = false; prog('Diagnóstico terminado.');
   } catch (e) { prog('Error: ' + e.message); }
@@ -174,22 +181,34 @@ $('bTest').onclick = async () => {
   finally { lock(false); }
 };
 
-$('bLive').onclick = async () => {
+async function live(want, title) {
   if (busy) return; lock(true); stopLive = false;
-  const want = [0x0C, 0x0D, 0x05, 0x0B, 0x10, 0x23, 0x0F, 0x5C, 0x42, 0x49];
-  const pids = want.filter((p) => diag.knownPids().includes(p));
+  const sup = supportedSet(diag);
+  const pids = want.filter((p) => sup.has(p) && ALL[p]);
+  const st = {}; let vueltas = 0;
   $('bStop').hidden = false; $('live').hidden = false;
-  $('live').innerHTML = '<div class="g">' + pids.map((p) => `<div class="v"><small>${esc(PIDS[p][0])}</small><b id="p${p}">-</b><small>${esc(PIDS[p][1])}</small></div>`).join('') + '</div>';
-  prog('Leyendo en vivo...');
+  $('live').innerHTML = '<div class="g">' + pids.map((p) => `<div class="v"><small>${esc(ALL[p][0])}</small><b id="p${p}">-</b><small>${esc(ALL[p][1])} · <span id="m${p}">min - / max -</span></small></div>`).join('') + '</div>';
+  prog(`${title}: leyendo... (min/max se registran hasta que toques Detener)`);
   try {
-    while (!stopLive) for (const p of pids) {
-      if (stopLive) break;
-      const v = await diag.readPid(p);
-      const el = $('p' + p); if (el) el.textContent = v ?? '-';
+    while (!stopLive) {
+      for (const p of pids) {
+        if (stopLive) break;
+        const v = await readAny(diag, p);
+        const s = (st[p] ||= { min: null, max: null, sinResp: 0, n: 0 });
+        if (v === null) s.sinResp++; else { s.n++; s.min = s.min === null ? v : Math.min(s.min, v); s.max = s.max === null ? v : Math.max(s.max, v); }
+        const el = $('p' + p); if (el) el.textContent = v ?? '-';
+        const mm = $('m' + p); if (mm) mm.textContent = `min ${s.min ?? '-'} / max ${s.max ?? '-'}` + (s.sinResp ? ` / ${s.sinResp} sin resp.` : '');
+      }
+      vueltas++;
     }
   } catch (e) { prog('Error: ' + e.message); }
-  $('bStop').hidden = true; lock(false); prog('Detenido.');
-};
+  report = [`${title} - ${new Date().toISOString()} - ${vueltas} vueltas`, ...pids.map((p) => { const s = st[p] || {};
+    return `${ALL[p][0]}: min ${s.min ?? '-'} / max ${s.max ?? '-'} ${ALL[p][1]} (${s.n || 0} lecturas, ${s.sinResp || 0} sin respuesta)`; })].join('\n');
+  $('rep').textContent = report; $('out').hidden = false;
+  $('bStop').hidden = true; lock(false); prog('Detenido. Resumen min/max abajo: Copiar reporte para pasarlo.');
+}
+$('bLive').onclick = () => live(LIVE_GENERAL, 'Datos en vivo');
+$('b5v').onclick = () => live(LIVE_5V, 'Sensores 5V');
 $('bStop').onclick = () => { stopLive = true; };
 
 $('bDisc').onclick = async () => {
