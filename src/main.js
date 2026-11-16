@@ -16,19 +16,27 @@ function lock(on) { busy = on; document.querySelectorAll('#acts button:not(#bSto
 
 $('mac').value = store.get('mac') || '';
 
+function btError(e, pre) {
+  const m = String((e && e.message) || e);
+  if (/permission denied/i.test(m)) return 'Falta el permiso. Ajustes > Apps > S10 Diag > Permisos > Dispositivos cercanos: Permitir.';
+  if (/disabled/i.test(m)) return 'Activá el Bluetooth del teléfono y volvé a intentar.';
+  return pre + ': ' + m;
+}
+
 $('bScan').onclick = async () => {
+  // scan() pide el permiso "Dispositivos cercanos" si falta; isEnabled() devuelve false
+  // mientras no este concedido, por eso no se consulta antes.
   try {
-    const { enabled } = await BT.isEnabled();
-    if (!enabled) return prog('Activá el Bluetooth del teléfono y volvé a intentar.');
     prog('Buscando (5 s)... El ELM tiene que estar enchufado y con contacto puesto.');
     const { devices } = await BT.scan();
-    const list = devices.filter((d) => d.address);
+    const list = devices.filter((d) => d.address)
+      .sort((a, b) => /obd|elm|v-?link/i.test(b.name || '') - /obd|elm|v-?link/i.test(a.name || ''));
     $('devs').innerHTML = list.length ? list.map((d) =>
       `<div class="dev" data-a="${esc(d.address)}"><b>${esc(d.name || 'sin nombre')}</b><br><small>${esc(d.address)}</small></div>`).join('')
       : '<p>No se encontró nada. Probá de nuevo o escribí la MAC.</p>';
     document.querySelectorAll('.dev').forEach((el) => (el.onclick = () => { $('mac').value = el.dataset.a; }));
     prog('Tocá tu ELM (suele llamarse OBDII) y después Conectar.');
-  } catch (e) { prog('Error buscando: ' + e.message); }
+  } catch (e) { prog(btError(e, 'Error buscando')); }
 };
 
 $('bConn').onclick = async () => {
@@ -36,7 +44,7 @@ $('bConn').onclick = async () => {
   if (!MAC_RE.test(mac)) return prog('MAC inválida.');
   try {
     prog('Conectando...');
-    try { await BT.connect({ address: mac }); } catch { await BT.connectInsecure({ address: mac }); }
+    await BT.connect({ address: mac }); // el plugin no implementa connectInsecure en Android
     addr = mac; store.set('mac', mac);
     const transport = {
       write: (v) => BT.write({ address: addr, value: v }),
@@ -50,7 +58,12 @@ $('bConn').onclick = async () => {
     setStatus('Conectado · ' + (diag.r.bateria || ''));
     $('conn').hidden = true; $('acts').hidden = false;
     prog('Listo. Protocolo ' + diag.r.protocolo);
-  } catch (e) { prog('No se pudo conectar: ' + e.message); setStatus('Desconectado'); }
+  } catch (e) {
+    const m = btError(e, 'No se pudo conectar');
+    prog(/failed to connect/i.test(m)
+      ? 'No se pudo conectar. Vinculá el OBDII en Ajustes > Bluetooth con PIN 1234 (o 0000) y reintentá.' : m);
+    setStatus('Desconectado');
+  }
   finally { lock(false); }
 };
 
