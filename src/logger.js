@@ -95,7 +95,7 @@ export const SLOW = [0x05, 0x2F, 0x42, 0x04, 0x33, 0x2C, 0x2D, 0x6A];
 const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
 
 export class TripLogger {
-  constructor(diag, ui, opts = {}) { this.diag = diag; this.ui = ui; this.stop = false; this.dids = opts.dids || []; this.version = opts.version; }
+  constructor(diag, ui, opts = {}) { this.diag = diag; this.ui = ui; this.stop = false; this.dids = opts.dids || []; this.version = opts.version; this.varPrev = opts.varPrev || []; }
   async run() {
     const sup = supportedSet(this.diag);
     const fast = FAST.filter((p) => sup.has(p)), slow = SLOW.filter((p) => sup.has(p));
@@ -109,7 +109,11 @@ export class TripLogger {
       muestras: 0, columnas: ['ms', ...pids.map((p) => ALL[p][0])], stats: {}, eventos: [], dtc_inicio: [], dtc_fin: [], mil_inicio: null, mil_fin: null,
       km: 0, nivel_inicio: null, nivel_fin: null, ultimo: {}, columnas_filas: ['ms', ...cols], filas: 0, version: this.version };
     await pruneRows().catch(() => {});
-    const xv = {}; let xi = 0, nextRv = 0, rv = null, rows = [], block = 0;
+    const xv = {}, varPrev = new Set(this.varPrev || []); let ci = 0, loopN = 0;
+    for (const x of extra) { x.n = 0; x.changed = false; x.last = undefined; }
+    const hot = (x) => x.changed || x.n < 2 || varPrev.has(x.k);
+    const readX = async (x) => { const v = await x.read(); if (x.n && v != null && x.last != null && v !== x.last) x.changed = true; if (v != null) x.last = v; x.n++; xv[x.k] = v; };
+    let xi = 0, nextRv = 0, rv = null, rows = [], block = 0;
     const flushRows = async () => { if (!rows.length) return; const r = rows; rows = []; trip.filas += r.length; await saveRows(trip.id, block++, r).catch(() => {}); };
     const pushRow = (vals, now) => rows.push([now - t0, ...pids.map((p) => vals[p] ?? null), ...extra.map((x) => xv[x.k] ?? null), rv]);
     trip.dtc_inicio = (await readDtcs(this.diag)) ?? []; trip.mil_inicio = await readMil(this.diag);
@@ -145,7 +149,10 @@ export class TripLogger {
       try {
         for (const p of fast) { if (this.stop) break; fresh[p] = await readAny(this.diag, p); }
         for (let k = 0; k < 2 && slow.length && !this.stop; k++) { const p = slow[si++ % slow.length]; fresh[p] = await readAny(this.diag, p); }
-        for (let k = 0; k < 2 && extra.length && !this.stop; k++) { const x = extra[xi++ % extra.length]; xv[x.k] = await x.read(); }
+        // PIDs extra: los que cambian (o todavia no se sabe) se leen seguido; los que quedaron fijos
+        // en este viaje y en los anteriores, uno cada 5 vueltas. Asi 375 PIDs GM no frenan a los utiles.
+        for (let k = 0, g = 0; k < 3 && g < extra.length && !this.stop; g++) { const x = extra[xi++ % extra.length]; if (!hot(x)) continue; await readX(x); k++; }
+        if (++loopN % 5 === 0 && extra.length && !this.stop) for (let g = 0; g < extra.length; g++) { const x = extra[ci++ % extra.length]; if (hot(x)) continue; await readX(x); break; }
         if (Date.now() > nextRv && !this.stop) { nextRv = Date.now() + 10000; const v = parseFloat(String((await this.diag.e.cmd('ATRV')).join(''))); rv = Number.isFinite(v) ? v : null; }
         fallos = 0;
       } catch (e) {
@@ -211,6 +218,7 @@ export class TripLogger {
     else { trip.dtc_fin = (await readDtcs(this.diag).catch(() => null)) ?? known; trip.mil_fin = (await readMil(this.diag).catch(() => null)) ?? knownMil; }
     trip.fin = new Date().toISOString(); trip.duracion_min = Math.round((Date.now() - t0) / 600) / 100;
     trip.km = Math.round(trip.km * 100) / 100;
+    trip.extra_variables = extra.filter((x) => x.changed).map((x) => x.k);
     await flushRows();
     await saveTrip(trip);
     return trip;

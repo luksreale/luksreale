@@ -7,7 +7,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.8.1';
+const VERSION = '0.8.2';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -351,10 +351,13 @@ $('bTrip').onclick = async () => {
   trip = new TripLogger(diag, (t, ev) => {
     drawDash(t);
     if (ev) { const b = $('evb'); b.textContent = '⚠ ' + ev; b.hidden = false; clearTimeout(evTimer); evTimer = setTimeout(() => (b.hidden = true), 8000); }
-  }, { dids: savedDids().filter((d) => d.bytes <= 4).map((d) => parseInt(d.did, 16)), version: VERSION });
+  }, { dids: savedDids().filter((d) => d.bytes <= 4).map((d) => parseInt(d.did, 16)), version: VERSION,
+    varPrev: (() => { try { return JSON.parse(store.get('xvar') || '[]'); } catch { return []; } })() });
   $('bStop').onclick = () => { stopLive = true; if (trip) trip.stop = true; };
   prog('Grabando viaje: dejá la app abierta, en pantalla y con cargador. Tocá Detener al llegar.');
-  try { const t = await trip.run(); prog(`Viaje guardado: ${fmt(t.km, 1)} km, ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
+  try { const t = await trip.run();
+    try { const prev = JSON.parse(store.get('xvar') || '[]'); store.set('xvar', JSON.stringify([...new Set([...prev, ...(t.extra_variables || [])])])); } catch {}
+    prog(`Viaje guardado: ${fmt(t.km, 1)} km, ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
   catch (e) { prog('Error en registro (lo grabado hasta ahora quedó guardado): ' + e.message); }
   await keepAwake(false);
   document.body.classList.remove('dash');
