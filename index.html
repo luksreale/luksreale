@@ -64,6 +64,10 @@
         <span class="ic"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg></span>
         <b>Adaptador</b><small>Probar el ELM327</small>
       </button>
+      <button id="bDid" class="act wide">
+        <span class="ic"><svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="M14.5 14.5L20 20M7.5 10h5M10 7.5v5"/></svg></span>
+        <b>Explorar PIDs GM</b><small>Busca datos extra del ECM (modo Chevrolet, servicio 22)</small>
+      </button>
     </div>
     <button id="bDisc" class="btn ghost">Desconectar</button>
   </section>
@@ -83,6 +87,7 @@
     <div class="sec-h"><svg viewBox="0 0 24 24"><path d="M3 12h4l2 5 4-10 2 5h6"/></svg><h3>Registros de viaje</h3></div>
     <div class="field"><label for="tank">Capacidad del tanque</label><div class="inp-u"><input id="tank" type="number" min="20" max="200" step="1" inputmode="numeric"><span>litros</span></div></div>
     <div class="row">
+      <button id="bCsv" class="btn primary">Exportar CSV</button>
       <button id="bTrips" class="btn secondary">Copiar registros</button>
       <button id="bClr" class="btn ghost danger-t">Borrar</button>
     </div>

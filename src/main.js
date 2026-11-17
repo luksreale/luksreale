@@ -2,10 +2,12 @@ import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
 import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.js';
-import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
-import { ALL, readAny, extraSnapshot, gmModules, addressingTest, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
+import { TripLogger, listTrips, clearTrips, tripsText, tripsCsv, fuelSummary } from './logger.js';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.7.6';
+const VERSION = '0.8.0';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -349,7 +351,7 @@ $('bTrip').onclick = async () => {
   trip = new TripLogger(diag, (t, ev) => {
     drawDash(t);
     if (ev) { const b = $('evb'); b.textContent = '⚠ ' + ev; b.hidden = false; clearTimeout(evTimer); evTimer = setTimeout(() => (b.hidden = true), 8000); }
-  });
+  }, { dids: savedDids().filter((d) => d.bytes <= 4).map((d) => parseInt(d.did, 16)), version: VERSION });
   $('bStop').onclick = () => { stopLive = true; if (trip) trip.stop = true; };
   prog('Grabando viaje: dejá la app abierta, en pantalla y con cargador. Tocá Detener al llegar.');
   try { const t = await trip.run(); prog(`Viaje guardado: ${fmt(t.km, 1)} km, ${t.duracion_min} min, ${t.eventos.length} eventos.`); }
@@ -362,6 +364,53 @@ $('bTrip').onclick = async () => {
 $('bTrips').onclick = async () => {
   try { const t = await listTrips(); if (!t.length) return prog('No hay viajes guardados.'); await copy(tripsText(t, tankL())); } catch (e) { prog('Error leyendo registros: ' + e.message); }
 };
+// Exportar la grabacion continua como archivo CSV + resumen, con el menu Compartir de Android
+// (WhatsApp, Drive, mail...). El archivo queda en la cache privada de la app; la app no usa internet.
+$('bCsv').onclick = async () => {
+  try {
+    prog('Armando el archivo...');
+    const t = await listTrips(); if (!t.length) return prog('No hay viajes guardados.');
+    const { csv, filas, viajes } = await tripsCsv(t);
+    if (!filas) return prog('Todavía no hay grabación continua (empieza con la versión 0.8.0).');
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    const files = [];
+    for (const [name, data] of [[`s10_datos_${stamp}.csv`, csv], [`s10_resumen_${stamp}.txt`, tripsText(t, tankL())]]) {
+      const w = await Filesystem.writeFile({ path: `export/${name}`, data, directory: Directory.Cache, encoding: Encoding.UTF8, recursive: true });
+      files.push(w.uri);
+    }
+    prog(`Archivo listo: ${filas} filas de ${viajes} viaje(s), ${(csv.length / 1048576).toFixed(1).replace('.', ',')} MB.`);
+    await Share.share({ title: 'S10 Diag - datos', files, dialogTitle: 'Compartir datos de la S10' });
+  } catch (e) { if (!/cancel/i.test(String(e && e.message))) prog('Error al exportar: ' + (e.message || e)); }
+};
+
+// ---- Explorar PIDs GM (servicio 22): busca que identificadores contesta el ECM. Se guardan y
+// el registro de viaje los graba en forma continua para despues identificar que mide cada uno.
+function savedDids() { try { return JSON.parse(store.get('dids') || '[]'); } catch { return []; } }
+$('bDid').onclick = async () => {
+  if (busy) return; lock(true); stopLive = false; showStop(true); await keepAwake(true);
+  $('out').hidden = true;
+  const total = DID_RANGES.reduce((a, [x, y]) => a + y - x + 1, 0);
+  prog(`Explorando ${total} identificadores GM. Tarda unos minutos: contacto puesto (mejor con motor en marcha).`);
+  const t0 = Date.now();
+  try {
+    const { out, sinServicio } = await scanDids(diag, {
+      stop: () => stopLive,
+      progress: (i, n, f) => prog(`Explorando PIDs GM ${i}/${n} · encontrados ${f} · ${Math.round((Date.now() - t0) / 1000)} s`),
+    });
+    if (sinServicio) { report = 'El ECM no contesta el servicio 22 (ni siquiera "no soportado").'; showOut(renderSimple('PIDs GM', [report]), report); }
+    else {
+      if (out.length) store.set('dids', JSON.stringify(out));
+      const num = out.filter((d) => d.bytes <= 4).length;
+      report = [`PIDs GM (servicio 22) en el ECM - ${new Date().toISOString()} - ${stopLive ? 'exploracion cortada' : 'exploracion completa'}`,
+        `Encontrados: ${out.length} (${num} numericos que se graban en el registro de viaje)`,
+        ...out.map((d) => `22${d.did}: ${d.bytes} bytes = ${d.hex}${d.bytes <= 4 ? ' (' + d.valor + ')' : ''}`)].join('\n');
+      showOut(renderSimple(`PIDs GM encontrados: ${out.length}`, report.split('\n').slice(1, 60)), report);
+    }
+    prog(out.length ? 'Listo. Desde ahora el Tablero graba también estos PIDs. Copiá el reporte y pasámelo.' : 'Listo.');
+  } catch (e) { prog('Error explorando: ' + e.message); }
+  await keepAwake(false); showStop(false); lock(false);
+};
+
 $('bClr').onclick = async () => {
   if (!confirm('¿Borrar todos los viajes guardados?')) return;
   try { await clearTrips(); prog('Registros borrados.'); refreshTrips(); } catch (e) { prog('Error: ' + e.message); }

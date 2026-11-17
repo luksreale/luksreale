@@ -113,3 +113,53 @@ export async function addressingTest(diag) {
   if (!ids.length) return { ok: true, txt: 'OK (7E7 no responde, como corresponde)' };
   return { ok: false, txt: `FALLA: un pedido a 7E7 lo contesto ${ids.join(',')} -> el adaptador ignora ATSH/ATCRA` };
 }
+
+// ---- Todo lo que el ECM ofrece por modo 01, ademas de lo que ya se decodifica.
+// Se excluyen los mapas de PIDs soportados y los de estado (no son mediciones).
+const NOT_DATA = new Set([0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0, 0x01, 0x02, 0x03, 0x12, 0x13, 0x1C, 0x1D, 0x1E, 0x41, 0x4D, 0x4E, 0x51, 0x65]);
+export const extraPids = (diag, skip) => [...supportedSet(diag)].filter((p) => !NOT_DATA.has(p) && !skip.includes(p)).sort((a, b) => a - b);
+export const pidName = (p) => (ALL[p] ? ALL[p][0] : `PID 01${hx(p, 2)} (bruto)`);
+// PID sin decodificador: se guardan los bytes en hexadecimal para analizarlos despues
+export async function readPidAny(diag, pid) {
+  if (ALL[pid]) return readAny(diag, pid);
+  for (const msgs of Object.values(await diag.q('01' + hx(pid, 2), 1500))) for (const m of msgs)
+    if (m.length > 2 && m[0] === 0x41 && m[1] === pid) return [...m.slice(2)].map((b) => hx(b, 2)).join('');
+  return null;
+}
+
+// ---- PIDs extendidos de GM (servicio 22, "leer dato por identificador"). Es lo que usan los
+// perfiles "Chevrolet/GM" de apps como Car Scanner. Solo lectura (22 esta permitido en assertSafe).
+// Valor: 1-4 bytes como numero entero sin escala (la escala se deduce despues comparando con
+// el comportamiento del motor); mas largos, en hexadecimal.
+const didVal = (d) => (d.length <= 4 ? d.reduce((a, b) => a * 256 + b, 0) : [...d].map((b) => hx(b, 2)).join(''));
+export async function readDid(diag, did, timeout = 1500) {
+  const hi = did >> 8, lo = did & 0xFF;
+  for (const msgs of Object.values(await diag.q('22' + hx(did, 4), timeout))) for (const m of msgs)
+    if (m.length > 3 && m[0] === 0x62 && m[1] === hi && m[2] === lo) return didVal(m.slice(3));
+  return null;
+}
+export const didName = (did) => `GM 22${hx(did, 4)}`;
+
+// Rangos donde los ECM GM suelen tener sus datos de motor. ~4900 identificadores: unos minutos.
+export const DID_RANGES = [[0x1100, 0x1FFF], [0x2000, 0x20FF], [0x3000, 0x33FF]];
+export async function scanDids(diag, { progress = () => {}, stop = () => false, found = () => {} } = {}) {
+  const ids = []; for (const [a, b] of DID_RANGES) for (let d = a; d <= b; d++) ids.push(d);
+  const out = []; let answered = 0;
+  await diag.e.cmd('ATST32'); // espera maxima 200 ms por respuesta (el ECM contesta "no soportado" al instante)
+  try {
+    for (let i = 0; i < ids.length && !stop(); i++) {
+      const did = ids[i];
+      if (i % 16 === 0) progress(i, ids.length, out.length);
+      const res = await diag.q('22' + hx(did, 4), 1500);
+      const msgs = Object.values(res).flat();
+      if (msgs.length) answered++;
+      for (const m of msgs) if (m.length > 3 && m[0] === 0x62 && m[1] === did >> 8 && m[2] === (did & 0xFF)) {
+        const d = m.slice(3); const r = { did: hx(did, 4), bytes: d.length, valor: didVal(d), hex: [...d].map((b) => hx(b, 2)).join('') };
+        out.push(r); found(r);
+      }
+      // si el ECM no contesta nada (ni siquiera "no soportado") en los primeros 64, no tiene servicio 22
+      if (i === 63 && !answered) return { out, sinServicio: true };
+    }
+  } finally { await diag.e.cmd('ATST96'); }
+  return { out, sinServicio: false };
+}

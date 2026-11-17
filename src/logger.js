@@ -1,7 +1,7 @@
 // Registro de viaje: lee en loop los sensores de 5 V + contexto, detecta anomalias,
 // guarda en el telefono (IndexedDB, solo local) un resumen por viaje y el detalle
 // alrededor de cada evento. Solo lectura: todo pasa por Diag.q -> assertSafe.
-import { ALL, readAny, supportedSet } from './extra.js';
+import { ALL, readAny, supportedSet, extraPids, pidName, readPidAny, readDid, didName } from './extra.js';
 import { parseFrames, dtcStr } from './elm.js';
 
 const RING = 60;          // muestras guardadas antes de cada evento (~70 s: cubre el intervalo de revision de codigos)
@@ -10,20 +10,33 @@ const MAX_EVENTS = 60;    // por viaje
 const DTC_EVERY_MS = 20000; // revision de codigos y testigo
 
 // ---- almacenamiento local (IndexedDB). No sale del telefono.
+// 'trips': resumen y eventos de cada viaje. 'filas': grabacion continua, en bloques de ~1 min
+// (clave "<id del viaje>#<nro de bloque>") para no reescribir todo el viaje en cada guardado.
+const KEEP_TRIPS_ROWS = 40; // viajes con grabacion continua que se conservan (~0,4 MB por hora)
+let dbp = null;
 function db() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open('s10diag', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('trips', { keyPath: 'id' });
-    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-  });
+  return (dbp ||= new Promise((res, rej) => {
+    const r = indexedDB.open('s10diag', 2);
+    r.onupgradeneeded = () => {
+      if (!r.result.objectStoreNames.contains('trips')) r.result.createObjectStore('trips', { keyPath: 'id' });
+      if (!r.result.objectStoreNames.contains('filas')) r.result.createObjectStore('filas', { keyPath: 'k' });
+    };
+    r.onsuccess = () => res(r.result); r.onerror = () => { dbp = null; rej(r.error); };
+  }));
 }
-async function tx(mode, fn) {
+async function tx(mode, fn, store = 'trips') {
   const d = await db();
-  return new Promise((res, rej) => { const t = d.transaction('trips', mode); const out = fn(t.objectStore('trips')); t.oncomplete = () => res(out.result ?? out); t.onerror = () => rej(t.error); });
+  return new Promise((res, rej) => { const t = d.transaction(store, mode); const out = fn(t.objectStore(store)); t.oncomplete = () => res(out.result ?? out); t.onerror = () => rej(t.error); });
 }
 export const saveTrip = (trip) => tx('readwrite', (s) => s.put(trip));
 export const listTrips = () => tx('readonly', (s) => s.getAll());
-export const clearTrips = () => tx('readwrite', (s) => s.clear());
+export async function clearTrips() { await tx('readwrite', (s) => s.clear()); await tx('readwrite', (s) => s.clear(), 'filas'); }
+const saveRows = (id, n, filas) => tx('readwrite', (s) => s.put({ k: `${id}#${String(n).padStart(5, '0')}`, filas }), 'filas');
+export const tripRows = async (id) => (await tx('readonly', (s) => s.getAll(IDBKeyRange.bound(id + '#', id + '#\uffff')), 'filas')).flatMap((b) => b.filas);
+async function pruneRows() {
+  const ids = (await listTrips()).map((t) => t.id).sort().reverse().slice(KEEP_TRIPS_ROWS);
+  for (const id of ids) await tx('readwrite', (s) => s.delete(IDBKeyRange.bound(id + '#', id + '#\uffff')), 'filas');
+}
 
 // Devuelve null si el ECM no contesto al modo 03: un fallo de lectura no es "codigos borrados".
 async function readDtcs(diag) {
@@ -82,15 +95,23 @@ export const SLOW = [0x05, 0x2F, 0x42, 0x04, 0x33, 0x2C, 0x2D, 0x6A];
 const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
 
 export class TripLogger {
-  constructor(diag, ui) { this.diag = diag; this.ui = ui; this.stop = false; }
+  constructor(diag, ui, opts = {}) { this.diag = diag; this.ui = ui; this.stop = false; this.dids = opts.dids || []; this.version = opts.version; }
   async run() {
     const sup = supportedSet(this.diag);
     const fast = FAST.filter((p) => sup.has(p)), slow = SLOW.filter((p) => sup.has(p));
     const pids = [...fast, ...slow];
+    // grabacion continua: ademas, todo PID que el ECM ofrezca y los PIDs GM (22) encontrados con "Explorar"
+    const extra = [...extraPids(this.diag, pids).map((p) => ({ k: 'p' + p, name: pidName(p), read: () => readPidAny(this.diag, p) })),
+      ...(this.dids || []).map((d) => ({ k: 'd' + d, name: didName(d), read: () => readDid(this.diag, d) }))];
+    const cols = [...pids.map((p) => ALL[p][0]), ...extra.map((x) => x.name), 'Tension adaptador (ATRV)'];
     const t0 = Date.now();
     const trip = { id: new Date(t0).toISOString(), inicio: new Date(t0).toISOString(), pids: pids.map((p) => ALL[p][0]),
       muestras: 0, columnas: ['ms', ...pids.map((p) => ALL[p][0])], stats: {}, eventos: [], dtc_inicio: [], dtc_fin: [], mil_inicio: null, mil_fin: null,
-      km: 0, nivel_inicio: null, nivel_fin: null, ultimo: {} };
+      km: 0, nivel_inicio: null, nivel_fin: null, ultimo: {}, columnas_filas: ['ms', ...cols], filas: 0, version: this.version };
+    await pruneRows().catch(() => {});
+    const xv = {}; let xi = 0, nextRv = 0, rv = null, rows = [], block = 0;
+    const flushRows = async () => { if (!rows.length) return; const r = rows; rows = []; trip.filas += r.length; await saveRows(trip.id, block++, r).catch(() => {}); };
+    const pushRow = (vals, now) => rows.push([now - t0, ...pids.map((p) => vals[p] ?? null), ...extra.map((x) => xv[x.k] ?? null), rv]);
     trip.dtc_inicio = (await readDtcs(this.diag)) ?? []; trip.mil_inicio = await readMil(this.diag);
     let lastDtc = trip.dtc_inicio.join(','), lastMil = trip.mil_inicio, nextDtc = Date.now() + DTC_EVERY_MS;
     const ring = []; let prev = null, pend = []; let lastSave = Date.now();
@@ -124,11 +145,13 @@ export class TripLogger {
       try {
         for (const p of fast) { if (this.stop) break; fresh[p] = await readAny(this.diag, p); }
         for (let k = 0; k < 2 && slow.length && !this.stop; k++) { const p = slow[si++ % slow.length]; fresh[p] = await readAny(this.diag, p); }
+        for (let k = 0; k < 2 && extra.length && !this.stop; k++) { const x = extra[xi++ % extra.length]; xv[x.k] = await x.read(); }
+        if (Date.now() > nextRv && !this.stop) { nextRv = Date.now() + 10000; const v = parseFloat(String((await this.diag.e.cmd('ATRV')).join(''))); rv = Number.isFinite(v) ? v : null; }
         fallos = 0;
       } catch (e) {
         // corte de Bluetooth: se guarda lo grabado y se reintenta; tras 5 fallos seguidos se termina
-        if (++fallos >= 5) throw e;
-        await saveTrip(trip).catch(() => {});
+        if (++fallos >= 5) { await flushRows(); await saveTrip(trip).catch(() => {}); throw e; }
+        await flushRows(); await saveTrip(trip).catch(() => {});
         await sleep(2000);
         continue;
       }
@@ -139,7 +162,11 @@ export class TripLogger {
       // segundos mientras se apaga, con valores que no sirven para alarmas, estadisticas ni codigos.
       if (fresh[0x42] != null) lowV = fresh[0x42] < 5;
       keyOff = lowV || Object.values(fresh).every((x) => x === null);
-      if (keyOff) { trip.contacto_cortado = (trip.contacto_cortado || 0) + 1; this.ui(trip); continue; }
+      if (keyOff) {
+        trip.contacto_cortado = (trip.contacto_cortado || 0) + 1;
+        pushRow({ ...cur, ...fresh }, Date.now()); // se graba igual (sirve ver como se apagan los sensores)
+        this.ui(trip); continue;
+      }
       const now = Date.now();
       Object.assign(cur, fresh);
       trip.muestras++;
@@ -157,6 +184,7 @@ export class TripLogger {
       for (const [p, val] of Object.entries(fresh)) { const st = (trip.stats[ALL[p][0]] ||= { min: null, max: null, sin_resp: 0 });
         if (val === null) st.sin_resp++; else { st.min = st.min === null ? val : Math.min(st.min, val); st.max = st.max === null ? val : Math.max(st.max, val); } }
       const row = [now - t0, ...pids.map((p) => cur[p] ?? null)];
+      pushRow(cur, now);
       for (const ev of pend) ev.despues.push(row);
       pend = pend.filter((ev) => ev.despues.length < AFTER);
       // "sin respuesta" solo cuenta para lo leido en esta vuelta
@@ -173,7 +201,7 @@ export class TripLogger {
         if (dt !== null) { lastDtc = dt.join(','); trip.dtc_actual = dt; }
         if (mil !== null) { lastMil = mil; trip.mil_actual = mil; }
       }
-      if (now - lastSave > 30000) { trip.fin = new Date().toISOString(); await saveTrip(trip).catch(() => {}); lastSave = now; }
+      if (now - lastSave > 30000) { trip.fin = new Date().toISOString(); await flushRows(); await saveTrip(trip).catch(() => {}); lastSave = now; }
       this.ui(trip);
     }
     // con el contacto cortado el ECM contesta "sin codigos" y testigo apagado aunque no sea asi:
@@ -183,6 +211,7 @@ export class TripLogger {
     else { trip.dtc_fin = (await readDtcs(this.diag).catch(() => null)) ?? known; trip.mil_fin = (await readMil(this.diag).catch(() => null)) ?? knownMil; }
     trip.fin = new Date().toISOString(); trip.duracion_min = Math.round((Date.now() - t0) / 600) / 100;
     trip.km = Math.round(trip.km * 100) / 100;
+    await flushRows();
     await saveTrip(trip);
     return trip;
   }
@@ -219,4 +248,24 @@ export function tripsText(trips, tankL = 76) {
     `Eventos: ${t.eventos.length}`,
     ...t.eventos.map((e) => `  [+${e.seg}s ${e.t}] ${e.motivo}\n    columnas: ${(t.columnas || []).join('|')}\n    antes: ${JSON.stringify(e.antes)}\n    despues: ${JSON.stringify(e.despues)}`),
   ].join('\n')).join('\n\n');
+}
+
+// CSV de la grabacion continua: separador ';' y coma decimal (abre bien en Excel en castellano).
+const local = (ms) => { const d = new Date(ms), z = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+export async function tripsCsv(trips) {
+  const ts = [...trips].filter((t) => t.columnas_filas).sort((a, b) => a.id.localeCompare(b.id));
+  const cols = []; for (const t of ts) for (const c of t.columnas_filas.slice(1)) if (!cols.includes(c)) cols.push(c);
+  const cell = (v) => (v == null ? '' : typeof v === 'number' ? String(v).replace('.', ',') : String(v).replace(/[;\n"]/g, ' '));
+  const out = ['\ufeff' + ['viaje', 'hora', 'seg', ...cols].join(';')];
+  let n = 0;
+  for (const t of ts) {
+    const idx = cols.map((c) => t.columnas_filas.indexOf(c)), t0 = Date.parse(t.inicio);
+    for (const r of await tripRows(t.id)) {
+      out.push([local(t0).slice(0, 16), local(t0 + r[0]).slice(11), cell(Math.round(r[0] / 100) / 10),
+        ...idx.map((i) => (i < 0 ? '' : cell(r[i])))].join(';'));
+      n++;
+    }
+  }
+  return { csv: out.join('\n'), filas: n, viajes: ts.length };
 }
