@@ -144,7 +144,8 @@ export const KNOWN_DIDS = {
   0x90D2: 'Temp escape 1 (bruto: /10-40 = C)', 0x90F2: 'Temp escape 2 (bruto: /10-40 = C)',
   0x9250: 'Temp gasoil (bruto: -40 = C)', 0xB2C6: 'Hollin DPF (%)',
 };
-export const didName = (did) => `GM 22${hx(did, 4)}${KNOWN_DIDS[did] ? ' ' + KNOWN_DIDS[did] : ''}`;
+// En la S10 2017 el 90D2 contesto 1 byte en 0: no es el ECM de la Colorado LWN, asi que el nombre no se usa.
+export const didName = (did) => `GM 22${hx(did, 4)}`;
 
 // Rangos donde los ECM GM suelen tener sus datos de motor, mas los del 2.8 (0x90xx-0x92xx, 0xB2xx).
 // Primero los ya conocidos. ~5900 identificadores: unos minutos.
@@ -162,7 +163,7 @@ export async function scanDids(diag, { progress = () => {}, stop = () => false, 
       const msgs = Object.values(res).flat();
       if (msgs.length) answered++;
       for (const m of msgs) if (m.length > 3 && m[0] === 0x62 && m[1] === did >> 8 && m[2] === (did & 0xFF)) {
-        const d = m.slice(3); const r = { did: hx(did, 4), nombre: KNOWN_DIDS[did] || '', bytes: d.length, valor: didVal(d), hex: [...d].map((b) => hx(b, 2)).join('') };
+        const d = m.slice(3); const r = { did: hx(did, 4), nombre: KNOWN_DIDS[did] ? '(en Colorado LWN: ' + KNOWN_DIDS[did] + ')' : '', bytes: d.length, valor: didVal(d), hex: [...d].map((b) => hx(b, 2)).join('') };
         out.push(r); found(r);
       }
       // si el ECM no contesta nada (ni siquiera "no soportado") en los primeros 64, no tiene servicio 22

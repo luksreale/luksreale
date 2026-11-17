@@ -2,12 +2,12 @@ import { registerPlugin } from '@capacitor/core';
 import { BleClient, dataViewToText, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { ELM, Diag, reportText, analyzeSnapshot } from './elm.js';
 import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.js';
-import { TripLogger, listTrips, clearTrips, tripsText, tripsCsv, fuelSummary } from './logger.js';
+import { TripLogger, listTrips, clearTrips, tripsText, tripsCsv, analyzeGm, fuelSummary } from './logger.js';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.8.3';
+const VERSION = '0.8.4';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -412,6 +412,25 @@ $('bDid').onclick = async () => {
     prog(out.length ? 'Listo. Desde ahora el Tablero graba también estos PIDs. Copiá el reporte y pasámelo.' : 'Listo.');
   } catch (e) { prog('Error explorando: ' + e.message); }
   await keepAwake(false); showStop(false); lock(false);
+};
+
+// Identificar PIDs GM con los viajes grabados
+$('bGm').onclick = async () => {
+  try {
+    prog('Analizando los PIDs GM de los viajes grabados...');
+    const a = await analyzeGm(await listTrips());
+    if (!a.viajes) return prog('Primero: "Explorar PIDs GM" y despues un viaje con el Tablero.');
+    const grp = (f) => a.pids.filter(f);
+    const solos = grp((p) => p.dist > 1 && p.r < 0.8), iguales = grp((p) => p.r >= 0.95 && p.dist > 1), rel = grp((p) => p.dist > 1 && p.r >= 0.8 && p.r < 0.95), fijos = grp((p) => p.dist <= 1);
+    const line = (p) => `${p.g}: ${p.min} a ${p.max} (${p.dist} valores) - ${p.txt}`;
+    report = [`Identificacion de PIDs GM - ${new Date().toISOString()} - ${a.viajes} viaje(s), ${a.filas} filas`,
+      `VARIAN SOLOS (datos propios de GM, los mas interesantes): ${solos.length}`, ...solos.map(line),
+      `IGUALES A UN DATO ESTANDAR: ${iguales.length}`, ...iguales.map(line),
+      `RELACIONADOS: ${rel.length}`, ...rel.map(line),
+      `FIJOS EN ESTOS VIAJES: ${fijos.length}`, ...fijos.map(line)].join('\n');
+    showOut(renderSimple('PIDs GM identificados', report.split('\n').slice(1, 80)), report);
+    prog('Listo. Copiá el reporte y pasámelo.');
+  } catch (e) { prog('Error analizando: ' + e.message); }
 };
 
 $('bClr').onclick = async () => {

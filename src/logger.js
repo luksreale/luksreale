@@ -279,3 +279,49 @@ export async function tripsCsv(trips) {
   }
   return { csv: out.join('\n'), filas: n, viajes: ts.length };
 }
+
+// ---- Identificar PIDs GM: compara cada PID GM grabado con los datos OBD estandar del mismo
+// momento (RPM, temperaturas, presiones, pedal...). Si sigue a uno casi exactamente (r >= 0,95),
+// es el mismo dato con otra escala: se informa la conversion (valor = bruto x a + b).
+const pearson = (xs, ys) => {
+  const n = xs.length; if (n < 20) return null;
+  let sx = 0, sy = 0; for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; }
+  const mx = sx / n, my = sy / n; let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { const a = xs[i] - mx, b = ys[i] - my; sxy += a * b; sxx += a * a; syy += b * b; }
+  if (!sxx || !syy) return null;
+  const slope = sxy / sxx; return { r: sxy / Math.sqrt(sxx * syy), a: slope, b: my - slope * mx };
+};
+const sig = (x) => (Math.abs(x) < 1e-9 ? '0' : String(Number(x.toPrecision(3))).replace('.', ','));
+export async function analyzeGm(trips) {
+  const ts = trips.filter((t) => (t.columnas_filas || []).some((c) => c.startsWith('GM 22')));
+  const series = {}; // nombre -> [[gm, std...]] por fila
+  const pairs = {}; let filas = 0;
+  for (const t of ts) {
+    const cols = t.columnas_filas, gm = cols.map((c, i) => [c, i]).filter(([c]) => c.startsWith('GM 22'));
+    const std = cols.map((c, i) => [c, i]).filter(([c]) => !c.startsWith('GM 22') && !c.startsWith('PID 01') && c !== 'ms');
+    const rows = await tripRows(t.id); filas += rows.length;
+    let prev = {};
+    for (const r of rows) for (const [g, gi] of gm) {
+      const v = r[gi]; if (typeof v !== 'number') continue;
+      (series[g] ||= []).push(v);
+      if (prev[g] === v && Math.random() < 0.7) continue; // menos peso a los valores repetidos (lectura vieja)
+      prev[g] = v;
+      for (const [s, si] of std) { const w = r[si]; if (typeof w === 'number') { const p = ((pairs[g] ||= {})[s] ||= [[], []]); p[0].push(v); p[1].push(w); } }
+    }
+  }
+  const out = [];
+  for (const [g, vs] of Object.entries(series)) {
+    const min = Math.min(...vs), max = Math.max(...vs), dist = new Set(vs).size;
+    let best = null;
+    for (const [s, [x, y]] of Object.entries(pairs[g] || {})) { const f = pearson(x, y); if (f && (!best || Math.abs(f.r) > Math.abs(best.r))) best = { ...f, s }; }
+    let txt;
+    if (dist <= 1) txt = `fijo en ${min}`;
+    else if (best && Math.abs(best.r) >= 0.95) txt = `= ${best.s} (r ${sig(best.r)}): valor = bruto x ${sig(best.a)} + ${sig(best.b)}`;
+    else if (best && Math.abs(best.r) >= 0.8) txt = `relacionado con ${best.s} (r ${sig(best.r)})`;
+    else txt = `varia sola (no sigue a ningun dato estandar)`;
+    out.push({ g, min, max, dist, n: vs.length, txt, r: best ? Math.abs(best.r) : 0 });
+  }
+  const order = (o) => (o.dist <= 1 ? 3 : o.r >= 0.95 ? 1 : o.r >= 0.8 ? 2 : 0);
+  out.sort((a, b) => order(a) - order(b) || a.g.localeCompare(b.g));
+  return { viajes: ts.length, filas, pids: out };
+}

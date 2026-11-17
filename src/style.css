@@ -187,3 +187,4 @@ body.dash #acts,body.dash #out,body.dash #trips,body.dash .foot{display:none}
 #evb{background:var(--bad);color:#2a0a0a;border-radius:var(--r2);padding:11px 13px;font-weight:650;margin-bottom:8px;font-size:14px;animation:pulse 1.2s ease-in-out 3}
 @keyframes pulse{50%{opacity:.75}}
 .dnote{color:var(--mut);font-size:12px;text-align:center;margin:10px 0 0}
+#trips .row{flex-wrap:wrap}#trips .row>*{flex:1 1 40%}
