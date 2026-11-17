@@ -68,7 +68,8 @@ export function anomalies(s, prev, baro, cur, miss) {
   const rail = s[0x23];
   if (rail != null && rpm != null && rpm > 600 && mariposa > 10 && rail < 15000) a.push(`Presion rail baja (${rail} kPa) en marcha`);
   if (prev && pieQuieto && mariposa > 10) for (const [p, lim] of [[0x0B, 60], [0x23, 60000]]) {
-    if (s[p] != null && prev[p] != null && Math.abs(s[p] - prev[p]) > lim) a.push(`Salto en ${ALL[p][0]} con el pie quieto: ${prev[p]} -> ${s[p]}`);
+    // solo caidas: una subida brusca de MAP/rail con el pie quieto es el turbo cargando, no una falla
+    if (s[p] != null && prev[p] != null && prev[p] - s[p] > lim) a.push(`Caida en ${ALL[p][0]} con el pie quieto: ${prev[p]} -> ${s[p]}`);
   }
   return a;
 }
@@ -99,12 +100,17 @@ export class TripLogger {
     const baro = cur[0x33] ?? null;
     // combustible: mediana de lecturas con la camioneta quieta (en movimiento el gasoil se mueve)
     const nivStart = [], nivEnd = []; let lastSpeedT = null, lastSpeed = null, si = 0;
+    // el mismo motivo (sin contar los numeros) dentro de 30 s no se repite
+    let lastEvKey = '', lastEvT = 0;
     const event = (motivo) => {
       if (trip.eventos.length >= MAX_EVENTS) return;
+      const key = motivo.replace(/[\d.,-]+/g, '#');
+      if (key === lastEvKey && Date.now() - lastEvT < 30000) return;
+      lastEvKey = key; lastEvT = Date.now();
       const ev = { t: new Date().toISOString(), seg: Math.round((Date.now() - t0) / 1000), motivo, antes: ring.slice(), despues: [] };
       trip.eventos.push(ev); pend.push(ev); this.ui(trip, motivo);
     };
-    let fallos = 0;
+    let fallos = 0, lowV = false, keyOff = false;
     while (!this.stop) {
       // En segundo plano (p.ej. WhatsApp) se pausa la lectura; al volver se sigue.
       // El hueco no suma km (la integracion ignora huecos > 10 s).
@@ -127,6 +133,13 @@ export class TripLogger {
         continue;
       }
       if (this.stop) break;
+      // 255 km/h es el valor invalido que manda el ECM al cortar contacto
+      if (fresh[0x0D] === 255) fresh[0x0D] = null;
+      // Contacto cortado: tension del modulo < 5 V o nada contesta. El ECM sigue respondiendo unos
+      // segundos mientras se apaga, con valores que no sirven para alarmas, estadisticas ni codigos.
+      if (fresh[0x42] != null) lowV = fresh[0x42] < 5;
+      keyOff = lowV || Object.values(fresh).every((x) => x === null);
+      if (keyOff) { trip.contacto_cortado = (trip.contacto_cortado || 0) + 1; this.ui(trip); continue; }
       const now = Date.now();
       Object.assign(cur, fresh);
       trip.muestras++;
@@ -163,7 +176,11 @@ export class TripLogger {
       if (now - lastSave > 30000) { trip.fin = new Date().toISOString(); await saveTrip(trip).catch(() => {}); lastSave = now; }
       this.ui(trip);
     }
-    trip.dtc_fin = (await readDtcs(this.diag).catch(() => null)) ?? (trip.dtc_actual || trip.dtc_inicio); trip.mil_fin = await readMil(this.diag).catch(() => null);
+    // con el contacto cortado el ECM contesta "sin codigos" y testigo apagado aunque no sea asi:
+    // en ese caso valen los ultimos leidos con el contacto puesto
+    const known = trip.dtc_actual || trip.dtc_inicio, knownMil = trip.mil_actual ?? trip.mil_inicio;
+    if (keyOff) { trip.dtc_fin = known; trip.mil_fin = knownMil; }
+    else { trip.dtc_fin = (await readDtcs(this.diag).catch(() => null)) ?? known; trip.mil_fin = (await readMil(this.diag).catch(() => null)) ?? knownMil; }
     trip.fin = new Date().toISOString(); trip.duracion_min = Math.round((Date.now() - t0) / 600) / 100;
     trip.km = Math.round(trip.km * 100) / 100;
     await saveTrip(trip);
