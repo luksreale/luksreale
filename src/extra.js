@@ -151,12 +151,14 @@ export const didName = (did) => `GM 22${hx(did, 4)}`;
 // ScanGauge. NINGUNO esta confirmado en esta S10: se muestran como "candidato" y se confirman
 // con "Identificar PIDs GM" (comparando contra los datos estandar del mismo viaje).
 export const DID_CANDIDATES = {
-  0x1141: 'tension de ignicion, A/10 V (comunidad GM)', 0x1144: 'presion A/C, A/51 V (comunidad GM)',
-  0x1154: 'temp aceite, A-40 C (comunidad GM)', 0x11BB: 'EGR posicion cerrada, A/51 V (comunidad GM)',
+  0x1141: 'tension de ignicion, A/10 V (comunidad GM; en ralenti dio 14,5 V = igual a la tension del modulo)',
+  0x116F: 'temp refrigerante, A-40 C (en ralenti dio el mismo byte que el PID estandar 05)', 0x1144: 'presion A/C, A/51 V (comunidad GM)',
+  0x1154: 'temp aceite, A-40 C (comunidad GM; en ralenti 41 C con refrigerante 50 C: plausible)', 0x11BB: 'EGR posicion cerrada, A/51 V (comunidad GM)',
   0x11C1: 'error posicion EGR, A/2,55 % (comunidad GM)', 0x1940: 'temp transmision, A-40 C (lista LWN; caja manual: probablemente no aplica)',
-  0x0063: 'estado regeneracion DPF (lista LWN)', 0x00D4: 'temp escape 4 (lista LWN, formula sin confirmar)', 0x0051: 'temp escape 5 (lista LWN, formula sin confirmar)',
 };
-export const didHint = (did) => (DID_CANDIDATES[did] ? `candidato: ${DID_CANDIDATES[did]}` : '');
+// 0x0000-0x00FF: este ECM devuelve ahi una copia de los PIDs OBD estandar (22000C = RPM, 220005 = temp...)
+export const didMirror = (did) => did < 0x100;
+export const didHint = (did) => (did < 0x100 ? `copia del PID OBD estandar 01${hx(did, 2)}` : DID_CANDIDATES[did] ? `candidato: ${DID_CANDIDATES[did]}` : '');
 
 // Rangos donde los ECM GM suelen tener sus datos de motor, los del 2.8 (0x90xx-0x92xx, 0xB2xx) y
 // 0x0000-0x00FF (ahi estan 0063/00D4/0051 de la lista LWN). 6.400 identificadores en total.
