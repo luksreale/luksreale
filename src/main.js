@@ -7,7 +7,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.8.0';
+const VERSION = '0.8.1';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -403,7 +403,7 @@ $('bDid').onclick = async () => {
       const num = out.filter((d) => d.bytes <= 4).length;
       report = [`PIDs GM (servicio 22) en el ECM - ${new Date().toISOString()} - ${stopLive ? 'exploracion cortada' : 'exploracion completa'}`,
         `Encontrados: ${out.length} (${num} numericos que se graban en el registro de viaje)`,
-        ...out.map((d) => `22${d.did}: ${d.bytes} bytes = ${d.hex}${d.bytes <= 4 ? ' (' + d.valor + ')' : ''}`)].join('\n');
+        ...out.map((d) => `22${d.did}${d.nombre ? ' ' + d.nombre : ''}: ${d.bytes} bytes = ${d.hex}${d.bytes <= 4 ? ' (' + d.valor + ')' : ''}`)].join('\n');
       showOut(renderSimple(`PIDs GM encontrados: ${out.length}`, report.split('\n').slice(1, 60)), report);
     }
     prog(out.length ? 'Listo. Desde ahora el Tablero graba también estos PIDs. Copiá el reporte y pasámelo.' : 'Listo.');
