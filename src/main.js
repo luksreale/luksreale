@@ -5,7 +5,7 @@ import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.j
 import { TripLogger, listTrips, clearTrips, tripsText, fuelSummary } from './logger.js';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.7.3';
+const VERSION = '0.7.4';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -264,12 +264,12 @@ let trip = null;
 const tankL = () => { const v = parseFloat(store.get('tank')); return v > 20 && v < 200 ? v : 76; };
 $('tank').value = tankL();
 $('tank').onchange = () => { store.set('tank', String(parseFloat($('tank').value) || 76)); $('tank').value = tankL(); refreshTrips(); };
-let semana = { km: 0, litros: 0 };
+let semana = { km: 0, litros: 0 }, savedTrips = [];
 async function refreshTrips() {
   try {
     const t = await listTrips(); const n = t.length;
     $('bTrips').textContent = `Copiar · ${n} viaje${n === 1 ? '' : 's'}`;
-    semana = fuelSummary(t, tankL());
+    savedTrips = t; semana = fuelSummary(t, tankL());
   } catch {}
 }
 refreshTrips();
@@ -331,8 +331,8 @@ function drawDash(t) {
   $('v_km').textContent = fmt(t.km, 1);
   const sec = Math.round((Date.now() - Date.parse(t.inicio)) / 1000);
   $('v_time').textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-  const km = semana.km + t.km, used = t.nivel_inicio != null && t.nivel_fin != null && t.nivel_inicio >= t.nivel_fin ? (t.nivel_inicio - t.nivel_fin) / 100 * tankL() : 0;
-  const lit = semana.litros + used;
+  const f = fuelSummary([...savedTrips.filter((x) => x.id !== t.id), t], tankL());
+  const km = f.km_medidos, lit = f.litros;
   $('v_l100').textContent = km >= 50 && lit > 0 ? fmt(lit / km * 100, 1) : '-';
   $('v_ev').textContent = t.eventos.length;
   $('dnote').textContent = (t.mil_actual ? '⚠ Testigo encendido. ' : '') + (t.dtc_actual && t.dtc_actual.length ? 'Códigos: ' + t.dtc_actual.join(', ') + '. ' : '') +

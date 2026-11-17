@@ -62,7 +62,8 @@ export function anomalies(s, prev, baro, cur, miss) {
   if (e != null && (e < 1 || e > 97)) a.push(`Pedal E en extremo (${e}%)`);
   const map = s[0x0B];
   if (map != null && baro && rpm === 0 && (cur[0x0D] ?? 0) === 0 && Math.abs(map - baro) > 10) a.push(`MAP ${map} vs baro ${baro} con motor parado`);
-  if (map != null && rpm != null && rpm > 400 && mariposa > 10 && map < 40) a.push(`MAP muy bajo (${map} kPa) en marcha`);
+  // > 600 rpm: al apagar el motor las RPM caen por debajo del ralenti y el MAP baja a vacio
+  if (map != null && rpm != null && rpm > 600 && mariposa > 10 && map < 40) a.push(`MAP muy bajo (${map} kPa) en marcha`);
   const rail = s[0x23];
   if (rail != null && rpm != null && rpm > 600 && mariposa > 10 && rail < 15000) a.push(`Presion rail baja (${rail} kPa) en marcha`);
   if (prev && pieQuieto && mariposa > 10) for (const [p, lim] of [[0x0B, 60], [0x23, 60000]]) {
@@ -169,22 +170,29 @@ export class TripLogger {
   }
 }
 
-// Consumo: por viaje, (nivel inicio - nivel fin) * capacidad del tanque. Solo es fiable
-// sumando muchos km; un 1 % de tanque son ~0,76 L.
+// Consumo. El sensor de nivel tiene resolucion de 1 % (~0,76 L): restar viaje por viaje pierde
+// lo que no llega a 1 % en cada uno. Por eso se encadenan los viajes seguidos (el siguiente
+// arranca con el mismo nivel con que termino el anterior, +-1,5 %) y se usa nivel inicial del
+// primero menos nivel final del ultimo. Si entre viajes el nivel cambia (carga de combustible o
+// manejo sin grabar) empieza un tramo nuevo.
 export function fuelSummary(trips, tankL) {
-  let km = 0, litros = 0, usados = 0;
-  for (const t of trips) {
-    if (!t.km) continue;
-    km += t.km;
-    if (t.nivel_inicio != null && t.nivel_fin != null && t.nivel_inicio >= t.nivel_fin) { litros += (t.nivel_inicio - t.nivel_fin) / 100 * tankL; usados++; }
+  const ts = trips.filter((t) => t.nivel_inicio != null && t.nivel_fin != null).sort((a, b) => a.id.localeCompare(b.id));
+  const tramos = [];
+  for (const t of ts) {
+    const cur = tramos[tramos.length - 1];
+    if (cur && Math.abs(t.nivel_inicio - cur.fin) <= 1.5) { cur.fin = t.nivel_fin; cur.km += t.km || 0; cur.viajes++; }
+    else tramos.push({ inicio: t.nivel_inicio, fin: t.nivel_fin, km: t.km || 0, viajes: 1 });
   }
-  return { km: Math.round(km * 10) / 10, litros: Math.round(litros * 10) / 10, viajes: trips.length, viajes_con_nivel: usados,
-    l100: km >= 50 && litros > 0 ? Math.round(litros / km * 1000) / 10 : null };
+  let km = 0, litros = 0;
+  for (const tr of tramos) if (tr.km > 0 && tr.inicio >= tr.fin) { km += tr.km; litros += (tr.inicio - tr.fin) / 100 * tankL; }
+  const kmTot = trips.reduce((a, t) => a + (t.km || 0), 0);
+  return { km: Math.round(kmTot * 10) / 10, km_medidos: Math.round(km * 10) / 10, litros: Math.round(litros * 10) / 10,
+    viajes: trips.length, tramos: tramos.length, l100: km >= 50 && litros > 0 ? Math.round(litros / km * 1000) / 10 : null };
 }
 
 export function tripsText(trips, tankL = 76) {
   const f = fuelSummary(trips, tankL);
-  const head = `RESUMEN: ${f.viajes} viajes, ${f.km} km, ~${f.litros} L (tanque ${tankL} L) -> ${f.l100 ?? 'faltan km (min 50)'} L/100km\n\n`;
+  const head = `RESUMEN: ${f.viajes} viajes, ${f.km} km (${f.km_medidos} km con nivel continuo, ${f.tramos} tramo/s), ~${f.litros} L (tanque ${tankL} L) -> ${f.l100 ?? 'faltan km (min 50)'} L/100km\n\n`;
   return head + trips.sort((a, b) => a.id.localeCompare(b.id)).map((t) => [
     `=== VIAJE ${t.inicio} (${t.duracion_min ?? '?'} min, ${t.muestras} muestras) ===`,
     `Km: ${t.km ?? '?'} | Nivel tanque inicio ${t.nivel_inicio ?? '?'}% fin ${t.nivel_fin ?? '?'}%`,
