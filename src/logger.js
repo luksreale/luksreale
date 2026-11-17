@@ -4,10 +4,10 @@
 import { ALL, readAny, supportedSet } from './extra.js';
 import { parseFrames, dtcStr } from './elm.js';
 
-const RING = 25;          // muestras guardadas antes de cada evento
+const RING = 60;          // muestras guardadas antes de cada evento (~70 s: cubre el intervalo de revision de codigos)
 const AFTER = 10;         // muestras guardadas despues
 const MAX_EVENTS = 60;    // por viaje
-const DTC_EVERY_MS = 60000;
+const DTC_EVERY_MS = 20000; // revision de codigos y testigo
 
 // ---- almacenamiento local (IndexedDB). No sale del telefono.
 function db() {
@@ -61,7 +61,8 @@ export function anomalies(s, prev, baro, cur, miss) {
   if (d != null && (d < 3 || d > 97)) a.push(`Pedal D en extremo (${d}%)`);
   if (e != null && (e < 1 || e > 97)) a.push(`Pedal E en extremo (${e}%)`);
   const map = s[0x0B];
-  if (map != null && baro && rpm === 0 && (cur[0x0D] ?? 0) === 0 && Math.abs(map - baro) > 10) a.push(`MAP ${map} vs baro ${baro} con motor parado`);
+  // solo con la mariposa abierta (contacto puesto sin arrancar); al apagar el motor la mariposa cierra
+  if (map != null && baro && rpm === 0 && (cur[0x0D] ?? 0) === 0 && mariposa > 50 && Math.abs(map - baro) > 10) a.push(`MAP ${map} vs baro ${baro} con motor parado`);
   // > 600 rpm: al apagar el motor las RPM caen por debajo del ralenti y el MAP baja a vacio
   if (map != null && rpm != null && rpm > 600 && mariposa > 10 && map < 40) a.push(`MAP muy bajo (${map} kPa) en marcha`);
   const rail = s[0x23];
