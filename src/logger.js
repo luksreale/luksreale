@@ -77,7 +77,9 @@ export function anomalies(s, prev, baro, cur, miss) {
   // solo con la mariposa abierta (contacto puesto sin arrancar); al apagar el motor la mariposa cierra
   if (map != null && baro && rpm === 0 && (cur[0x0D] ?? 0) === 0 && mariposa > 50 && Math.abs(map - baro) > 10) a.push(`MAP ${map} vs baro ${baro} con motor parado`);
   // > 600 rpm: al apagar el motor las RPM caen por debajo del ralenti y el MAP baja a vacio
-  if (map != null && rpm != null && rpm > 600 && mariposa > 10 && map < 40) a.push(`MAP muy bajo (${map} kPa) en marcha`);
+  // 2 lecturas seguidas: al apagar el motor la mariposa cierra y el MAP cae a vacio un instante
+  // (la mariposa se lee cada varias vueltas y puede figurar abierta todavia)
+  if (map != null && rpm != null && rpm > 600 && mariposa > 10 && map < 40) { miss.mapLow = (miss.mapLow || 0) + 1; if (miss.mapLow === 2) a.push(`MAP muy bajo (${map} kPa) en marcha, 2 lecturas`); } else miss.mapLow = 0;
   const rail = s[0x23];
   if (rail != null && rpm != null && rpm > 600 && mariposa > 10 && rail < 15000) a.push(`Presion rail baja (${rail} kPa) en marcha`);
   if (prev && pieQuieto && mariposa > 10) for (const [p, lim] of [[0x0B, 60], [0x23, 60000]]) {
