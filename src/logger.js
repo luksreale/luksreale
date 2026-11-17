@@ -1,7 +1,7 @@
 // Registro de viaje: lee en loop los sensores de 5 V + contexto, detecta anomalias,
 // guarda en el telefono (IndexedDB, solo local) un resumen por viaje y el detalle
 // alrededor de cada evento. Solo lectura: todo pasa por Diag.q -> assertSafe.
-import { ALL, readAny, supportedSet, extraPids, pidName, readPidAny, readDid, didName } from './extra.js';
+import { ALL, readAny, supportedSet, extraPids, pidName, readPidAny, readDid, didName, didHint } from './extra.js';
 import { parseFrames, dtcStr } from './elm.js';
 
 const RING = 60;          // muestras guardadas antes de cada evento (~70 s: cubre el intervalo de revision de codigos)
@@ -319,6 +319,7 @@ export async function analyzeGm(trips) {
     else if (best && Math.abs(best.r) >= 0.95) txt = `= ${best.s} (r ${sig(best.r)}): valor = bruto x ${sig(best.a)} + ${sig(best.b)}`;
     else if (best && Math.abs(best.r) >= 0.8) txt = `relacionado con ${best.s} (r ${sig(best.r)})`;
     else txt = `varia sola (no sigue a ningun dato estandar)`;
+    const h = didHint(parseInt(g.slice(5, 9), 16)); if (h) txt += ` [${h}]`;
     out.push({ g, min, max, dist, n: vs.length, txt, r: best ? Math.abs(best.r) : 0 });
   }
   const order = (o) => (o.dist <= 1 ? 3 : o.r >= 0.95 ? 1 : o.r >= 0.8 ? 2 : 0);

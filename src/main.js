@@ -5,9 +5,9 @@ import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.j
 import { TripLogger, listTrips, clearTrips, tripsText, tripsCsv, analyzeGm, fuelSummary } from './logger.js';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
+import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, rangeKey, didHint, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.8.4';
+const VERSION = '0.8.5';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -392,24 +392,35 @@ function savedDids() { try { return JSON.parse(store.get('dids') || '[]'); } cat
 $('bDid').onclick = async () => {
   if (busy) return; lock(true); stopLive = false; showStop(true); await keepAwake(true);
   $('out').hidden = true;
-  const total = DID_RANGES.reduce((a, [x, y]) => a + y - x + 1, 0);
+  // solo los rangos que todavia no se exploraron (los resultados se suman a los anteriores)
+  let done = []; try { done = JSON.parse(store.get('didsDone') || '[]'); } catch {}
+  // exploracion hecha con la 0.8.1-0.8.4: esos 5 rangos ya estan (falta solo 0000-00FF)
+  if (store.get('didsDone') == null && savedDids().length) done = DID_RANGES.slice(1).map(rangeKey);
+  let ranges = DID_RANGES.filter((rg) => !done.includes(rangeKey(rg)));
+  if (!ranges.length) { ranges = DID_RANGES; done = []; }
+  const total = ranges.reduce((a, [x, y]) => a + y - x + 1, 0);
   prog(`Explorando ${total} identificadores GM. Tarda unos minutos: contacto puesto (mejor con motor en marcha).`);
-  const t0 = Date.now();
+  const t0 = Date.now(); let total2 = 0;
   try {
-    const { out, sinServicio } = await scanDids(diag, {
+    const { out: nuevos, sinServicio } = await scanDids(diag, { ranges,
       stop: () => stopLive,
       progress: (i, n, f) => prog(`Explorando PIDs GM ${i}/${n} · encontrados ${f} · ${Math.round((Date.now() - t0) / 1000)} s`),
     });
     if (sinServicio) { report = 'El ECM no contesta el servicio 22 (ni siquiera "no soportado").'; showOut(renderSimple('PIDs GM', [report]), report); }
     else {
+      const prev = done.length ? savedDids() : [];
+      const out = [...prev.filter((d) => !nuevos.some((n) => n.did === d.did)), ...nuevos].sort((a, b) => a.did.localeCompare(b.did));
       if (out.length) store.set('dids', JSON.stringify(out));
-      const num = out.filter((d) => d.bytes <= 4).length;
+      if (!stopLive) store.set('didsDone', JSON.stringify([...done, ...ranges.map(rangeKey)]));
+      const cans = [...new Set(nuevos.map((d) => d.can))].join(' / ') || '-';
+      const num = out.filter((d) => d.bytes <= 4).length; total2 = out.length;
       report = [`PIDs GM (servicio 22) en el ECM - ${new Date().toISOString()} - ${stopLive ? 'exploracion cortada' : 'exploracion completa'}`,
-        `Encontrados: ${out.length} (${num} numericos que se graban en el registro de viaje)`,
-        ...out.map((d) => `22${d.did}${d.nombre ? ' ' + d.nombre : ''}: ${d.bytes} bytes = ${d.hex}${d.bytes <= 4 ? ' (' + d.valor + ')' : ''}`)].join('\n');
+        `Encontrados: ${out.length} en total, ${nuevos.length} en esta exploracion (${num} numericos se graban en el registro de viaje)`,
+        `Contesto: ${cans} (7E8 = ECM)`,
+        ...out.map((d) => `22${d.did}${didHint(parseInt(d.did, 16)) ? ' (' + didHint(parseInt(d.did, 16)) + ')' : ''}: ${d.bytes} bytes = ${d.hex}${d.bytes <= 4 ? ' (' + d.valor + ')' : ''}`)].join('\n');
       showOut(renderSimple(`PIDs GM encontrados: ${out.length}`, report.split('\n').slice(1, 60)), report);
     }
-    prog(out.length ? 'Listo. Desde ahora el Tablero graba también estos PIDs. Copiá el reporte y pasámelo.' : 'Listo.');
+    prog(total2 ? 'Listo. Desde ahora el Tablero graba también estos PIDs. Copiá el reporte y pasámelo.' : 'Listo.');
   } catch (e) { prog('Error explorando: ' + e.message); }
   await keepAwake(false); showStop(false); lock(false);
 };

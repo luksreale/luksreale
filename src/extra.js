@@ -147,12 +147,24 @@ export const KNOWN_DIDS = {
 // En la S10 2017 el 90D2 contesto 1 byte en 0: no es el ECM de la Colorado LWN, asi que el nombre no se usa.
 export const didName = (did) => `GM 22${hx(did, 4)}`;
 
-// Rangos donde los ECM GM suelen tener sus datos de motor, mas los del 2.8 (0x90xx-0x92xx, 0xB2xx).
-// Primero los ya conocidos. ~5900 identificadores: unos minutos.
-export const DID_RANGES = [[0x9000, 0x92FF], [0xB200, 0xB2FF], [0x1100, 0x1FFF], [0x2000, 0x20FF], [0x3000, 0x33FF]];
-export async function scanDids(diag, { progress = () => {}, stop = () => false, found = () => {} } = {}) {
-  const ids = Object.keys(KNOWN_DIDS).map(Number);
-  for (const [a, b] of DID_RANGES) for (let d = a; d <= b; d++) if (!KNOWN_DIDS[d]) ids.push(d);
+// Candidatos por servicio 22 tomados de otras apps/vehiculos GM (comunidad) o de la lista LWN de
+// ScanGauge. NINGUNO esta confirmado en esta S10: se muestran como "candidato" y se confirman
+// con "Identificar PIDs GM" (comparando contra los datos estandar del mismo viaje).
+export const DID_CANDIDATES = {
+  0x1141: 'tension de ignicion, A/10 V (comunidad GM)', 0x1144: 'presion A/C, A/51 V (comunidad GM)',
+  0x1154: 'temp aceite, A-40 C (comunidad GM)', 0x11BB: 'EGR posicion cerrada, A/51 V (comunidad GM)',
+  0x11C1: 'error posicion EGR, A/2,55 % (comunidad GM)', 0x1940: 'temp transmision, A-40 C (lista LWN; caja manual: probablemente no aplica)',
+  0x0063: 'estado regeneracion DPF (lista LWN)', 0x00D4: 'temp escape 4 (lista LWN, formula sin confirmar)', 0x0051: 'temp escape 5 (lista LWN, formula sin confirmar)',
+};
+export const didHint = (did) => (DID_CANDIDATES[did] ? `candidato: ${DID_CANDIDATES[did]}` : '');
+
+// Rangos donde los ECM GM suelen tener sus datos de motor, los del 2.8 (0x90xx-0x92xx, 0xB2xx) y
+// 0x0000-0x00FF (ahi estan 0063/00D4/0051 de la lista LWN). 6.400 identificadores en total.
+export const DID_RANGES = [[0x0000, 0x00FF], [0x9000, 0x92FF], [0xB200, 0xB2FF], [0x1100, 0x1FFF], [0x2000, 0x20FF], [0x3000, 0x33FF]];
+export const rangeKey = ([a, b]) => hx(a, 4) + '-' + hx(b, 4);
+export async function scanDids(diag, { ranges = DID_RANGES, progress = () => {}, stop = () => false, found = () => {} } = {}) {
+  const ids = [];
+  for (const [a, b] of ranges) for (let d = a; d <= b; d++) ids.push(d);
   const out = []; let answered = 0;
   await diag.e.cmd('ATST32'); // espera maxima 200 ms por respuesta (el ECM contesta "no soportado" al instante)
   try {
@@ -162,8 +174,9 @@ export async function scanDids(diag, { progress = () => {}, stop = () => false, 
       const res = await diag.q('22' + hx(did, 4), 1500);
       const msgs = Object.values(res).flat();
       if (msgs.length) answered++;
+      const canId = Object.keys(res).join(','); // modulo que contesto (7E8 = ECM)
       for (const m of msgs) if (m.length > 3 && m[0] === 0x62 && m[1] === did >> 8 && m[2] === (did & 0xFF)) {
-        const d = m.slice(3); const r = { did: hx(did, 4), nombre: KNOWN_DIDS[did] ? '(en Colorado LWN: ' + KNOWN_DIDS[did] + ')' : '', bytes: d.length, valor: didVal(d), hex: [...d].map((b) => hx(b, 2)).join('') };
+        const d = m.slice(3); const r = { did: hx(did, 4), can: canId, nombre: didHint(did), bytes: d.length, valor: didVal(d), hex: [...d].map((b) => hx(b, 2)).join('') };
         out.push(r); found(r);
       }
       // si el ECM no contesta nada (ni siquiera "no soportado") en los primeros 64, no tiene servicio 22
