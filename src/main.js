@@ -7,7 +7,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, rangeKey, didHint, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.8.7';
+const VERSION = '0.8.8';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -337,7 +337,7 @@ function drawDash(t) {
   const km = f.km_medidos, lit = f.litros;
   $('v_l100').textContent = km >= 50 && lit > 0 ? fmt(lit / km * 100, 1) : '-';
   $('v_ev').textContent = t.eventos.length;
-  $('dnote').textContent = (t.mil_actual ? '⚠ Testigo encendido. ' : '') + (t.dtc_actual && t.dtc_actual.length ? 'Códigos: ' + t.dtc_actual.join(', ') + '. ' : '') +
+  $('dnote').textContent = (u.ref5v && u.ref5v.length ? `Ref. 5 V (hipótesis): ${u.ref5v.map((v) => fmt(v, 2)).join(' / ')} V. ` : '') + (t.mil_actual ? '⚠ Testigo encendido. ' : '') + (t.dtc_actual && t.dtc_actual.length ? 'Códigos: ' + t.dtc_actual.join(', ') + '. ' : '') +
     (km < 50 ? `Consumo: se calcula al juntar 50 km (llevás ${fmt(km, 0)}).` : '');
 }
 $('bTrip').onclick = async () => {

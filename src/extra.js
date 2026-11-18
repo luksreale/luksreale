@@ -160,6 +160,7 @@ export const DID_CANDIDATES = {
   0x11A1: 'segundos desde el arranque (CONFIRMADO: igual al PID 1F)',
   0x2040: 'temp refrigerante, A-40 C (sigue al PID 05)',
   0x1942: 'velocidad del vehiculo en otra escala (sigue al PID 0D, x0,0048)',
+  0x20D9: 'posible referencia 5 V (x5/255 = 4,84 V; hipotesis)', 0x20DF: 'posible referencia 5 V (x5/255 = 4,84 V; hipotesis)', 0x20DE: 'posible referencia 5 V (x5/255 = 4,49 V; hipotesis)',
   0x12F5: 'inversa de RPM (tiempo por segmento del cigueñal)', 0x130E: 'inversa de RPM (tiempo por segmento del cigueñal)', 0x1144: 'presion A/C, A/51 V (comunidad GM)',
   0x1154: 'temp aceite, A-40 C (comunidad GM). En el viaje del 18/11 subio lento de 25 a 117 C sin estabilizarse: escala sin confirmar', 0x11BB: 'EGR posicion cerrada, A/51 V (comunidad GM)',
   0x11C1: 'error posicion EGR, A/2,55 % (comunidad GM)', 0x1940: 'temp transmision, A-40 C (lista LWN; caja manual: probablemente no aplica)',

@@ -93,6 +93,9 @@ export function anomalies(s, prev, baro, cur, miss) {
 // Lentos: rotan de a 2 por vuelta; entre lecturas se usa el ultimo valor conocido.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const FAST = [0x0C, 0x0D, 0x0B, 0x49, 0x4A, 0x23];
+// Posibles lecturas de las referencias de 5 V (hipotesis: fijos en 247/247/229 = 4,84/4,84/4,49 V
+// con la escala GM x5/255 en el viaje del 18/11). Se vigilan para ver si alguno cae con el P0641.
+export const WATCH5V = [0x20D9, 0x20DF, 0x20DE];
 export const SLOW = [0x05, 0x2F, 0x42, 0x04, 0x33, 0x2C, 0x2D, 0x6A];
 const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
 
@@ -104,7 +107,7 @@ export class TripLogger {
     const pids = [...fast, ...slow];
     // grabacion continua: ademas, todo PID que el ECM ofrezca y los PIDs GM (22) encontrados con "Explorar"
     const extra = [...extraPids(this.diag, pids).map((p) => ({ k: 'p' + p, name: pidName(p), read: () => readPidAny(this.diag, p) })),
-      ...(this.dids || []).map((d) => ({ k: 'd' + d, name: didName(d), read: () => readDid(this.diag, d) }))];
+      ...[...new Set([...(this.dids || []), ...WATCH5V])].map((d) => ({ k: 'd' + d, name: didName(d), read: () => readDid(this.diag, d), watch: WATCH5V.includes(d) }))];
     const cols = [...pids.map((p) => ALL[p][0]), ...extra.map((x) => x.name), 'Tension adaptador (ATRV)'];
     const t0 = Date.now();
     const trip = { id: new Date(t0).toISOString(), inicio: new Date(t0).toISOString(), pids: pids.map((p) => ALL[p][0]),
@@ -113,7 +116,17 @@ export class TripLogger {
     await pruneRows().catch(() => {});
     const xv = {}, varPrev = new Set(this.varPrev || []); let ci = 0, loopN = 0;
     for (const x of extra) { x.n = 0; x.changed = false; x.last = undefined; }
-    const hot = (x) => x.changed || x.n < 2 || varPrev.has(x.k);
+    // vigilancia rapida de los posibles PIDs de referencia 5 V: 2 por vuelta (cada uno ~cada 2 s)
+    const wx = extra.filter((x) => x.watch), wbase = {}, wnull = {}; let wi = 0;
+    const readWatch = async () => {
+      for (let k = 0; k < 2 && wx.length && !this.stop; k++) {
+        const x = wx[wi++ % wx.length]; if ((wnull[x.k] || 0) >= 3) continue; // el ECM no lo tiene
+        const v = await x.read(); xv[x.k] = v;
+        if (typeof v !== 'number') { wnull[x.k] = (wnull[x.k] || 0) + 1; continue; }
+        wnull[x.k] = 0; const b = (wbase[x.k] ||= []); if (b.length < 5) b.push(v);
+      }
+    };
+    const hot = (x) => !x.watch && ( x.changed || x.n < 2 || varPrev.has(x.k));
     const readX = async (x) => { const v = await x.read(); if (x.n && v != null && x.last != null && v !== x.last) x.changed = true; if (v != null) x.last = v; x.n++; xv[x.k] = v; };
     let xi = 0, nextRv = 0, rv = null, rows = [], block = 0;
     const flushRows = async () => { if (!rows.length) return; const r = rows; rows = []; trip.filas += r.length; await saveRows(trip.id, block++, r).catch(() => {}); };
@@ -154,7 +167,8 @@ export class TripLogger {
         // PIDs extra: los que cambian (o todavia no se sabe) se leen seguido; los que quedaron fijos
         // en este viaje y en los anteriores, uno cada 5 vueltas. Asi 375 PIDs GM no frenan a los utiles.
         for (let k = 0, g = 0; k < 3 && g < extra.length && !this.stop; g++) { const x = extra[xi++ % extra.length]; if (!hot(x)) continue; await readX(x); k++; }
-        if (++loopN % 5 === 0 && extra.length && !this.stop) for (let g = 0; g < extra.length; g++) { const x = extra[ci++ % extra.length]; if (hot(x)) continue; await readX(x); break; }
+        if (++loopN % 5 === 0 && extra.length && !this.stop) for (let g = 0; g < extra.length; g++) { const x = extra[ci++ % extra.length]; if (hot(x) || x.watch) continue; await readX(x); break; }
+        await readWatch();
         if (Date.now() > nextRv && !this.stop) { nextRv = Date.now() + 10000; const v = parseFloat(String((await this.diag.e.cmd('ATRV')).join(''))); rv = Number.isFinite(v) ? v : null; }
         fallos = 0;
       } catch (e) {
@@ -198,10 +212,12 @@ export class TripLogger {
       pend = pend.filter((ev) => ev.despues.length < AFTER);
       // "sin respuesta" solo cuenta para lo leido en esta vuelta
       const an = anomalies(fresh, prev, baro, cur, miss);
+      for (const x of wx) { const v = xv[x.k], b = wbase[x.k];
+        if (typeof v === 'number' && b && b.length >= 5) { const base = median(b); if (v <= base - 5) an.push(`Posible caida de referencia 5 V: ${x.name} ${base} -> ${v} (~${(v * 5 / 255).toFixed(2)} V)`); } }
       if (an.length) event(an.join('; '));
       ring.push(row); if (ring.length > RING) ring.shift();
       prev = { ...cur };
-      trip.ultimo = { ...cur, baro };
+      trip.ultimo = { ...cur, baro, ref5v: wx.map((x) => xv[x.k]).filter((v) => typeof v === 'number').map((v) => Math.round(v * 500 / 255) / 100) };
       if (now > nextDtc) {
         nextDtc = now + DTC_EVERY_MS;
         const dt = await readDtcs(this.diag), mil = await readMil(this.diag);
