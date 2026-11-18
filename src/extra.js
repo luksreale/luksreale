@@ -41,6 +41,9 @@ export async function readAny(diag, pid) {
 
 export async function extraSnapshot(diag) {
   const sup = supportedSet(diag), out = {};
+  // Horas de motor (GM 222068, segundos totales en marcha; confirmado con el viaje del 18/11)
+  const hs = await readDid(diag, 0x2068).catch(() => null);
+  if (typeof hs === 'number') out['Horas de motor (GM)'] = `${Math.round(hs / 360) / 10} h`;
   for (const pid of Object.keys(EXTRA).map(Number)) if (sup.has(pid)) {
     const v = await readAny(diag, pid); if (v !== null) out[EXTRA[pid][0]] = `${v} ${EXTRA[pid][1]}`;
   }
@@ -152,8 +155,13 @@ export const didName = (did) => `GM 22${hx(did, 4)}`;
 // con "Identificar PIDs GM" (comparando contra los datos estandar del mismo viaje).
 export const DID_CANDIDATES = {
   0x1141: 'tension de ignicion, A/10 V (comunidad GM; en ralenti dio 14,5 V = igual a la tension del modulo)',
-  0x116F: 'temp refrigerante, A-40 C (en ralenti dio el mismo byte que el PID estandar 05)', 0x1144: 'presion A/C, A/51 V (comunidad GM)',
-  0x1154: 'temp aceite, A-40 C (comunidad GM; en ralenti 41 C con refrigerante 50 C: plausible)', 0x11BB: 'EGR posicion cerrada, A/51 V (comunidad GM)',
+  0x116F: 'temp refrigerante al arrancar, A-40 C (fijo durante el viaje; 25 C en el arranque en frio del 18/11)',
+  0x2068: 'horas de motor: segundos totales con el motor en marcha (CONFIRMADO: sube 1 por segundo)',
+  0x11A1: 'segundos desde el arranque (CONFIRMADO: igual al PID 1F)',
+  0x2040: 'temp refrigerante, A-40 C (sigue al PID 05)',
+  0x1942: 'velocidad del vehiculo en otra escala (sigue al PID 0D, x0,0048)',
+  0x12F5: 'inversa de RPM (tiempo por segmento del cigueñal)', 0x130E: 'inversa de RPM (tiempo por segmento del cigueñal)', 0x1144: 'presion A/C, A/51 V (comunidad GM)',
+  0x1154: 'temp aceite, A-40 C (comunidad GM). En el viaje del 18/11 subio lento de 25 a 117 C sin estabilizarse: escala sin confirmar', 0x11BB: 'EGR posicion cerrada, A/51 V (comunidad GM)',
   0x11C1: 'error posicion EGR, A/2,55 % (comunidad GM)', 0x1940: 'temp transmision, A-40 C (lista LWN; caja manual: probablemente no aplica)',
 };
 // 0x0000-0x00FF: este ECM devuelve ahi una copia de los PIDs OBD estandar (22000C = RPM, 220005 = temp...)
