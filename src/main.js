@@ -5,9 +5,9 @@ import { esc, deviceItem, vehicleCard, renderReport, renderSimple } from './ui.j
 import { TripLogger, listTrips, clearTrips, tripsText, tripsCsv, analyzeGm, fuelSummary } from './logger.js';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, rangeKey, didHint, fixFuelInReport, ref5vHints, supportedSet, LIVE_5V, LIVE_GENERAL } from './extra.js';
+import { ALL, readAny, extraSnapshot, gmModules, addressingTest, scanDids, DID_RANGES, rangeKey, didHint, fixFuelInReport, ref5vHints, supportedSet, LIVE_ENGINE, LIVE_GENERAL } from './extra.js';
 
-const VERSION = '0.8.8';
+const VERSION = '0.8.9';
 const BT = registerPlugin('BluetoothSerial'); // ELM327 Bluetooth clasico (SPP)
 const $ = (id) => document.getElementById(id);
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
@@ -245,7 +245,7 @@ async function live(want, title) {
   showStop(false); lock(false); prog('Detenido. Abajo tenés el resumen de mínimos y máximos.');
 }
 $('bLive').onclick = () => live(LIVE_GENERAL, 'Datos en vivo');
-$('b5v').onclick = () => live(LIVE_5V, 'Sensores 5V');
+$('b5v').onclick = () => live(LIVE_ENGINE, 'Sensores del motor');
 $('bStop').onclick = () => { stopLive = true; };
 
 $('bDisc').onclick = async () => {

@@ -51,7 +51,11 @@ export async function extraSnapshot(diag) {
 }
 
 // Sensores alimentados por referencias de 5 V que este ECM publica por OBD estandar.
-export const LIVE_5V = [0x0C, 0x0B, 0x33, 0x23, 0x49, 0x4A, 0x2C, 0x2D, 0x6A, 0x42];
+// "Sensores del motor": sensores que pueden colgar de una referencia de 5 V + baro (para comparar el
+// MAP con motor parado) y contexto. No son la tension de la referencia en si: esa no se lee por OBD.
+export const LIVE_ENGINE = [0x0C, 0x0B, 0x33, 0x23, 0x49, 0x4A, 0x04, 0x5C, 0x2C, 0x2D, 0x6A, 0x42];
+// Reservado para cuando se confirme (con multimetro) algun PID GM que informe la referencia de 5 V.
+export const LIVE_5V = [];
 export const LIVE_GENERAL = [0x0C, 0x0D, 0x05, 0x0B, 0x10, 0x23, 0x0F, 0x5C, 0x42, 0x49, 0x4A, 0x2C, 0x6A];
 
 // Busqueda de modulos GM. El ECM de la S10 no responde a 3E00 (TesterPresent),
@@ -97,11 +101,24 @@ export async function gmModules(diag, progress = () => {}) {
   return found;
 }
 
-const REF5V = { P0641: 'referencia 5 V 1', P0651: 'referencia 5 V 2', P0697: 'referencia 5 V 3', P06A3: 'referencia 5 V 4' };
+const REF5V = {
+  P0641: 'referencia 5 V 1 (A)', P0642: 'referencia 5 V 1 (A), tension baja', P0643: 'referencia 5 V 1 (A), tension alta',
+  P0651: 'referencia 5 V 2 (B)', P0652: 'referencia 5 V 2 (B), tension baja', P0653: 'referencia 5 V 2 (B), tension alta',
+  P0697: 'referencia 5 V 3 (C)', P06A3: 'referencia 5 V 4 (D)',
+};
+const PEDAL = ['P2138', 'P2122', 'P2123', 'P2127', 'P2128'], MAPC = ['P0106', 'P0107', 'P0108'];
 export function ref5vHints(r) {
   const out = [];
-  for (const [ecu, g] of Object.entries(r.dtc_obd || {})) for (const c of [...(g.confirmados || []), ...(g.pendientes || [])])
-    if (REF5V[c]) out.push(['ALTO', `${ecu}: ${c} = falla en ${REF5V[c]} de sensores. Usar "Sensores 5V" en vivo y mover mazos/fichas con motor en marcha: el sensor que salta a 0 o al maximo junto con el movimiento esta en el circuito afectado`]);
+  for (const [ecu, g] of Object.entries(r.dtc_obd || {})) {
+    const all = [...(g.confirmados || []), ...(g.pendientes || [])].map((c) => c.split(' ')[0]);
+    const refs = all.filter((c) => REF5V[c]);
+    for (const c of refs) out.push(['ALTO', `${ecu}: ${c} = falla en ${REF5V[c]} de sensores. Usar "Sensores del motor" en vivo y mover mazos/fichas con motor en marcha: el sensor que salta a 0 o al maximo junto con el movimiento esta en el circuito afectado`]);
+    if (!refs.length) continue;
+    // Un codigo de sensor junto con el de referencia apunta al sensor que comparte ese circuito
+    const ped = all.filter((c) => PEDAL.includes(c)), map = all.filter((c) => MAPC.includes(c));
+    if (ped.length) out.push(['ALTO', `${ecu}: ${refs.join(', ')} junto con ${ped.join(', ')}: sensor sospechoso = pedal del acelerador (el codigo no dice si el D o el E). Medir 5 V y masa en la ficha del pedal moviendo el mazo`]);
+    if (map.length) out.push(['ALTO', `${ecu}: ${refs.join(', ')} junto con ${map.join(', ')}: sensor sospechoso = MAP. Medir 5 V y masa en la ficha del MAP y revisar el orificio (hollin/aceite)`]);
+  }
   return out;
 }
 

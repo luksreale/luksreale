@@ -82,21 +82,44 @@ export function anomalies(s, prev, baro, cur, miss) {
   if (map != null && rpm != null && rpm > 600 && mariposa > 10 && map < 40) { miss.mapLow = (miss.mapLow || 0) + 1; if (miss.mapLow === 2) a.push(`MAP muy bajo (${map} kPa) en marcha, 2 lecturas`); } else miss.mapLow = 0;
   const rail = s[0x23];
   if (rail != null && rpm != null && rpm > 600 && mariposa > 10 && rail < 15000) a.push(`Presion rail baja (${rail} kPa) en marcha`);
+  const hayCaida = () => a.some((x) => x.startsWith('Caida en'));
   if (prev && pieQuieto && mariposa > 10) for (const [p, lim] of [[0x0B, 60], [0x23, 60000]]) {
     // solo caidas: una subida brusca de MAP/rail con el pie quieto es el turbo cargando, no una falla
     if (s[p] != null && prev[p] != null && prev[p] - s[p] > lim) a.push(`Caida en ${ALL[p][0]} con el pie quieto: ${prev[p]} -> ${s[p]}`);
   }
+  // refADrop: posible caida de la referencia 5 V "A". Si la referencia cae, los sensores que cuelgan
+  // de ella bajan JUNTOS aunque el conductor no mueva el pie. Por eso se exige el pedal D quieto:
+  // al soltar el acelerador MAP, rail y pedal E bajan normalmente (probado con los viajes del 18/11:
+  // sin esta condicion la regla salta 35 veces en un solo viaje).
+  // - grupo: solo sensores medidos (MAP, rail, pedal E); la carga (04) es un calculo del ECM y la
+  //   temp de aceite (5C) no es un sensor de 5 V ni este ECM la informa;
+  // - caida > 15 % respecto de la lectura anterior en >= 2 sensores, confirmada en 2 vueltas seguidas;
+  // - no se evalua con el contacto cortado: el caller no llama a anomalies() cuando keyOff es true;
+  // - si en la misma vuelta ya hay un evento "Caida en" de MAP o rail, no se duplica.
+  const caen = [];
+  if (prev && pieQuieto) for (const p of REF_A) {
+    const v = s[p], pv = prev[p];
+    if (v != null && pv != null && pv > 0 && v < pv * 0.85) caen.push(`${ALL[p][0]} ${pv} -> ${v} (-${Math.round((1 - v / pv) * 100)} %)`);
+  }
+  if (caen.length >= 2) { miss.refA = (miss.refA || 0) + 1; if (miss.refA === 2 && !hayCaida()) a.push(`Posible caida de referencia 5 V A con el pedal D quieto (2 vueltas): ${caen.join(', ')}`); }
+  else miss.refA = 0;
   return a;
 }
 
 // Rapidos: se leen en cada vuelta (tablero fluido y deteccion de cortes en los sensores de 5 V).
 // Lentos: rotan de a 2 por vuelta; entre lecturas se usa el ultimo valor conocido.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-export const FAST = [0x0C, 0x0D, 0x0B, 0x49, 0x4A, 0x23];
-// Posibles lecturas de las referencias de 5 V (hipotesis: fijos en 247/247/229 = 4,84/4,84/4,49 V
-// con la escala GM x5/255 en el viaje del 18/11). Se vigilan para ver si alguno cae con el P0641.
-export const WATCH5V = [0x20D9, 0x20DF, 0x20DE];
-export const SLOW = [0x05, 0x2F, 0x42, 0x04, 0x33, 0x2C, 0x2D, 0x6A];
+// 04 (carga) y 5C (temp aceite) se agregan para tener mas contexto en cada vuelta; los PIDs que el
+// ECM no soporta (en esta S10 el 5C) se descartan solos con supportedSet.
+export const FAST = [0x0C, 0x0D, 0x0B, 0x49, 0x4A, 0x23, 0x04, 0x5C];
+// Sensores medidos que usa refADrop (MAP, rail, pedal E). Ver la regla en anomalies().
+export const REF_A = [0x0B, 0x23, 0x4A];
+// PIDs GM de las referencias de 5 V: VACIO. La hipotesis 2220D9/2220DF/2220DE quedo descartada con el
+// viaje del 18/11 11:07 (el 2220D9 bajo al apagar el motor con contacto puesto, y ninguno se movio
+// cuando salto el P0641). Antes de volver a agregar un PID aca hay que confirmarlo midiendo la
+// referencia con multimetro y viendo que el PID acompaña. Con el array vacio readWatch no hace nada.
+export const WATCH5V = [];
+export const SLOW = [0x05, 0x2F, 0x42, 0x33, 0x2C, 0x2D, 0x6A];
 const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
 
 export class TripLogger {
@@ -119,6 +142,7 @@ export class TripLogger {
     // vigilancia rapida de los posibles PIDs de referencia 5 V: 2 por vuelta (cada uno ~cada 2 s)
     const wx = extra.filter((x) => x.watch), wbase = {}, wnull = {}; let wi = 0;
     const readWatch = async () => {
+      if (!wx.length) return; // WATCH5V vacio: nada que vigilar
       for (let k = 0; k < 2 && wx.length && !this.stop; k++) {
         const x = wx[wi++ % wx.length]; if ((wnull[x.k] || 0) >= 3) continue; // el ECM no lo tiene
         const v = await x.read(); xv[x.k] = v;
